@@ -1,0 +1,14 @@
+{
+  "name": "irys-plugins",
+  "owner": {
+    "name": "Irys"
+  },
+  "description": "Internal Claude Code plugins for the Irys team.",
+  "plugins": [
+    {
+      "name": "blackboard-mcp",
+      "source": "./packages/blackboard-mcp/claude-plugin",
+      "description": "Persistent, typed, provenance-tracked blackboard reasoning for AI agents. Zero API calls, zero cost."
+    }
+  ]
+}

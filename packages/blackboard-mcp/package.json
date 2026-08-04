@@ -1,15 +1,16 @@
 {
-  "name": "@irys/blackboard-mcp",
-  "version": "0.2.0",
+  "name": "@iqidis/blackboard-mcp",
+  "version": "0.2.3",
   "description": "Persistent blackboard reasoning for AI agents. Zero API calls, zero cost. Works with Claude Code and Codex.",
   "type": "module",
   "bin": {
-    "blackboard-mcp": "./dist/index.js"
+    "blackboard-mcp": "dist/index.js"
   },
   "main": "./dist/index.js",
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build && npm test",
     "start": "node dist/index.js",
     "test": "node test/test_workflow.mjs",
     "dev": "tsc --watch"
@@ -26,6 +27,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/iqidis/ant-irys"
+    "url": "git+https://github.com/dl1683/irys-stateful-swarms.git",
+    "directory": "packages/blackboard-mcp"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

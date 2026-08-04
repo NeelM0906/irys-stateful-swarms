@@ -4,11 +4,58 @@ Persistent structured reasoning for AI agents. Zero API calls, zero cost.
 
 Blackboard MCP gives any AI agent — Claude Code, Codex, or anything that speaks MCP — a shared, typed, provenance-tracked knowledge base that persists across sessions. Instead of treating every interaction as a fresh start, agents build cumulative analytical state: observations grounded in source documents, analyses with confidence scores, calculations with supporting evidence, and gaps that flag what's still missing. The blackboard survives between sessions, so the next agent picks up where the last one left off.
 
+## Quick start
+
+### With Claude Code
+
+One-liner, from your project root:
+
+```bash
+claude mcp add blackboard -- npx @iqidis/blackboard-mcp
+```
+
+Or add directly to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "blackboard": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@iqidis/blackboard-mcp"]
+    }
+  }
+}
+```
+
+### With Codex CLI
+
+```json
+{
+  "mcpServers": {
+    "blackboard": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@iqidis/blackboard-mcp"]
+    }
+  }
+}
+```
+
+### From source
+
+```bash
+git clone https://github.com/dl1683/irys-stateful-swarms
+cd irys-stateful-swarms/packages/blackboard-mcp
+npm install && npm run build
+node dist/index.js
+```
+
 ## Contents
 
+- [Quick start](#quick-start)
 - [SWE-bench Verified results](#swe-bench-verified-results)
 - [Multi-model scaling experiment](#multi-model-scaling-experiment)
-- [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [Tools](#tools)
 - [Entry types](#entry-types)
@@ -62,47 +109,6 @@ Queries 1–4 showed no cost savings because each hit orthogonal sections of the
 Fable+BB used 13% fewer total tokens than the control, and 41% fewer on the synthesis query specifically.
 
 Full experiment outputs: [`examples/datadog-strategic-analysis/comparison/experiment/`](../../examples/datadog-strategic-analysis/comparison/experiment/)
-
-## Quick start
-
-### With Claude Code
-
-Add to your project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "blackboard": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["@irys/blackboard-mcp"]
-    }
-  }
-}
-```
-
-### With Codex CLI
-
-```json
-{
-  "mcpServers": {
-    "blackboard": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["@irys/blackboard-mcp"]
-    }
-  }
-}
-```
-
-### From source
-
-```bash
-git clone https://github.com/iqidis/ant-irys
-cd ant-irys/packages/blackboard-mcp
-npm install && npm run build
-node dist/index.js
-```
 
 ## How it works
 
