@@ -21,10 +21,10 @@
 - [Full benchmark results](#full-benchmark-results)
 - [How stateful swarms reason](#how-stateful-swarms-reason)
 - [Why stateful swarms matter](#why-stateful-swarms-matter)
+- [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
 - [Beyond legal: domain-agnostic](#beyond-legal-the-stateful-swarm-paradigm-is-domain-agnostic)
   - [SWE-bench Verified](#swe-bench-verified-blackboard-mcp-achieves-73-of-claude-codes-performance-with-a-minimal-scaffold)
   - [Datadog 10-K strategic analysis](#datadog-10-k-strategic-analysis)
-- [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Contributing](#contributing)
@@ -416,54 +416,6 @@ This is the persistence layer that makes stateful swarms practical in production
 
 A production stateful swarm combines coordination (irys-stateful-swarms) with improved reasoning (Latent Space), better representations (Fractal Embeddings, CTI), and persistent matter-level memory (MapU). Each layer reinforces the others — better reasoning produces higher-quality state, better representations improve cross-reference detection within that state, and persistent memory ensures none of it is ever discarded. We're releasing each piece independently so the community can explore these directions.
 
-## Beyond legal: the stateful swarm paradigm is domain-agnostic
-
-irys-stateful-swarms was validated on the Harvey LAB benchmark, but the underlying paradigm — task decomposition, persistent blackboard state-building, multi-agent coordination with typed provenance — is not legal-specific. Any domain where professionals build understanding over time through repeated analysis of complex documents is a domain where stateful swarms outperform stateless approaches: financial due diligence, regulatory compliance, medical research synthesis, insurance underwriting, patent analysis, investigative journalism.
-
-**We've already proven this across two very different domains.**
-
-### SWE-bench Verified: Blackboard MCP achieves 73% of Claude Code's performance with a minimal scaffold
-
-We ran [SWE-bench Verified](https://www.swebench.com/) — 500 real GitHub issues from major Python repositories — using **Sonnet 4.6 + Blackboard MCP**. The catch: we couldn't run Blackboard MCP through Claude Code's agent infrastructure because SWE-bench's Docker-based evaluation pipeline doesn't support injecting MCP servers into the agent loop. Instead, we used a **minimal API wrapper** — essentially raw Sonnet 4.6 API calls with Blackboard MCP as the only enhancement. No file navigation tools, no shell execution, no retry logic, no repository mapping. Just the model and the blackboard.
-
-| | Claude Code (Sonnet 4.6) | Codex CLI (o4-mini) | **Blackboard MCP + thin wrapper** |
-|---|---|---|---|
-| Scaffold | Full CLI agent (file tools, shell, retry, repo map) | Full CLI agent | **Bare API wrapper** |
-| Resolve rate (evaluated) | — | — | **73%** |
-| Published % (SWE-bench Verified /500) | **79.6%** | **69.2%** | ~54%* |
-
-> \* Our /500 number is lower because the minimal scaffold failed to produce patches for 97/500 tasks (timeouts, workspace errors) and 16 matplotlib instances couldn't be evaluated due to Docker environment build failures. Among instances that were evaluated, Blackboard MCP resolved **73%** — within striking distance of Claude Code's full-scaffold performance. We already beat Codex CLI's published rate among evaluated instances, using a scaffold with a fraction of the engineering.
-
-**What this means:** A barely-there scaffold with Blackboard MCP achieved **92% of Claude Code's resolve rate** among evaluated instances — and **beat Codex CLI's published 69.2%** outright. The quality gap between our minimal wrapper and a fully-engineered CLI agent is almost entirely about coverage (can the agent navigate the repo and produce a patch at all), not about reasoning quality (can it figure out the right fix). The blackboard is doing the heavy lifting on reasoning; the scaffold just needs to get out of the way.
-
-**Why this matters for you:** If you're already using Claude Code or Codex with Blackboard MCP installed, you're running a better scaffold than what produced these numbers. The reasoning quality the blackboard adds to your existing tools is substantial — and it's free (zero API calls, zero cost).
-
-Full methodology and per-repository breakdown: [`benchmarks/swebench/`](benchmarks/swebench/)
-
-### Datadog 10-K strategic analysis
-
-With zero code changes, we pointed irys-stateful-swarms at 7 Datadog 10-K annual filings (FY2019–FY2025) and asked for a strategic priority analysis. The system produced a 12,657-word investment memo — tracing product strategy evolution, go-to-market transformation, competitive positioning shifts, financial trajectory, and risk factor changes across 7 years of SEC filings. The same blackboard architecture, the same model routing, the same swarm coordination. We ran an equivalent task through Claude Code (Opus) simultaneously — it failed with context window thrashing after 7 minutes, unable to hold the filings in memory. The full comparison is in [`examples/datadog-strategic-analysis/COMPARISON.md`](examples/datadog-strategic-analysis/COMPARISON.md).
-
-#### Multi-model scaling experiment
-
-We then ran a controlled experiment across 5 model configurations (Opus 4.6, Sonnet 4.6, Haiku 4.5, Fable 5 with blackboard, Fable 5 without) answering 5 sequential queries against the full Datadog public filing corpus (1,857 files, 520 MB). On the final synthesis query — a full investment thesis requiring integration across all prior analysis dimensions — Fable 5 with blackboard produced the highest-quality output of all five configurations while reading zero corpus files. The same model without blackboard read 70 pages and produced a less insightful answer. The blackboard's structured cross-referencing forced connections between risk factor language changes and financial trajectory data that didn't emerge from raw PDF reads — the blackboard acts as a quality amplifier, not just a cost optimizer.
-
-| Config | Synthesis file reads | Synthesis tokens | Quality |
-|---|---|---|---|
-| **Fable 5 + BB** | **0 files** | **86K** | **Best** — cross-domain analytical connections from accumulated state |
-| Fable 5 (no BB) | 70 pages | 146K | Thorough but isolated — no cross-query insight transfer |
-| Opus 4.6 + BB | 0 files | 66K | Strong structure, zero file reads |
-| Sonnet 4.6 + BB | 5 files | 123K | Competent but generic |
-| Haiku 4.5 + BB | 35 pages | 98K | Material factual errors |
-
-Full experiment data: [`examples/datadog-strategic-analysis/comparison/experiment/`](examples/datadog-strategic-analysis/comparison/experiment/). Detailed methodology and results: [`packages/blackboard-mcp/README.md`](packages/blackboard-mcp/README.md#multi-model-scaling-experiment).
-
----
-
-We're actively adapting the system to run across multiple benchmarks spanning different fields of knowledge work. The swarm framework is being generalized with benchmark adapters so we can evaluate against diverse task types and domains.
-
-We're a small team, and benchmark runs at scale take real compute and time. We'll be releasing results as we complete them. If you're working on benchmarks for knowledge-intensive tasks and would be interested in partnering or having irys-stateful-swarms evaluated on your benchmark, reach out at [devansh@iqidis.ai](mailto:devansh@iqidis.ai).
-
 ## Blackboard MCP: use stateful reasoning in Claude Code and Codex
 
 The blackboard reasoning system that powers irys-stateful-swarms is available as a standalone MCP server at [`packages/blackboard-mcp/`](packages/blackboard-mcp/). It gives any AI agent persistent structured reasoning — zero API calls, zero cost.
@@ -524,6 +476,54 @@ node dist/index.js
 A packaged Claude Code plugin is also available at [`packages/blackboard-mcp/claude-plugin/`](packages/blackboard-mcp/claude-plugin/) for marketplace-style installs.
 
 Once configured, the agent automatically uses the blackboard for complex analysis tasks and skips it for simple questions. See [`packages/blackboard-mcp/SETUP.md`](packages/blackboard-mcp/SETUP.md) for details.
+
+## Beyond legal: the stateful swarm paradigm is domain-agnostic
+
+irys-stateful-swarms was validated on the Harvey LAB benchmark, but the underlying paradigm — task decomposition, persistent blackboard state-building, multi-agent coordination with typed provenance — is not legal-specific. Any domain where professionals build understanding over time through repeated analysis of complex documents is a domain where stateful swarms outperform stateless approaches: financial due diligence, regulatory compliance, medical research synthesis, insurance underwriting, patent analysis, investigative journalism.
+
+**We've already proven this across two very different domains.**
+
+### SWE-bench Verified: Blackboard MCP achieves 73% of Claude Code's performance with a minimal scaffold
+
+We ran [SWE-bench Verified](https://www.swebench.com/) — 500 real GitHub issues from major Python repositories — using **Sonnet 4.6 + Blackboard MCP**. The catch: we couldn't run Blackboard MCP through Claude Code's agent infrastructure because SWE-bench's Docker-based evaluation pipeline doesn't support injecting MCP servers into the agent loop. Instead, we used a **minimal API wrapper** — essentially raw Sonnet 4.6 API calls with Blackboard MCP as the only enhancement. No file navigation tools, no shell execution, no retry logic, no repository mapping. Just the model and the blackboard.
+
+| | Claude Code (Sonnet 4.6) | Codex CLI (o4-mini) | **Blackboard MCP + thin wrapper** |
+|---|---|---|---|
+| Scaffold | Full CLI agent (file tools, shell, retry, repo map) | Full CLI agent | **Bare API wrapper** |
+| Resolve rate (evaluated) | — | — | **73%** |
+| Published % (SWE-bench Verified /500) | **79.6%** | **69.2%** | ~54%* |
+
+> \* Our /500 number is lower because the minimal scaffold failed to produce patches for 97/500 tasks (timeouts, workspace errors) and 16 matplotlib instances couldn't be evaluated due to Docker environment build failures. Among instances that were evaluated, Blackboard MCP resolved **73%** — within striking distance of Claude Code's full-scaffold performance. We already beat Codex CLI's published rate among evaluated instances, using a scaffold with a fraction of the engineering.
+
+**What this means:** A barely-there scaffold with Blackboard MCP achieved **92% of Claude Code's resolve rate** among evaluated instances — and **beat Codex CLI's published 69.2%** outright. The quality gap between our minimal wrapper and a fully-engineered CLI agent is almost entirely about coverage (can the agent navigate the repo and produce a patch at all), not about reasoning quality (can it figure out the right fix). The blackboard is doing the heavy lifting on reasoning; the scaffold just needs to get out of the way.
+
+**Why this matters for you:** If you're already using Claude Code or Codex with Blackboard MCP installed, you're running a better scaffold than what produced these numbers. The reasoning quality the blackboard adds to your existing tools is substantial — and it's free (zero API calls, zero cost).
+
+Full methodology and per-repository breakdown: [`benchmarks/swebench/`](benchmarks/swebench/)
+
+### Datadog 10-K strategic analysis
+
+With zero code changes, we pointed irys-stateful-swarms at 7 Datadog 10-K annual filings (FY2019–FY2025) and asked for a strategic priority analysis. The system produced a 12,657-word investment memo — tracing product strategy evolution, go-to-market transformation, competitive positioning shifts, financial trajectory, and risk factor changes across 7 years of SEC filings. The same blackboard architecture, the same model routing, the same swarm coordination. We ran an equivalent task through Claude Code (Opus) simultaneously — it failed with context window thrashing after 7 minutes, unable to hold the filings in memory. The full comparison is in [`examples/datadog-strategic-analysis/COMPARISON.md`](examples/datadog-strategic-analysis/COMPARISON.md).
+
+#### Multi-model scaling experiment
+
+We then ran a controlled experiment across 5 model configurations (Opus 4.6, Sonnet 4.6, Haiku 4.5, Fable 5 with blackboard, Fable 5 without) answering 5 sequential queries against the full Datadog public filing corpus (1,857 files, 520 MB). On the final synthesis query — a full investment thesis requiring integration across all prior analysis dimensions — Fable 5 with blackboard produced the highest-quality output of all five configurations while reading zero corpus files. The same model without blackboard read 70 pages and produced a less insightful answer. The blackboard's structured cross-referencing forced connections between risk factor language changes and financial trajectory data that didn't emerge from raw PDF reads — the blackboard acts as a quality amplifier, not just a cost optimizer.
+
+| Config | Synthesis file reads | Synthesis tokens | Quality |
+|---|---|---|---|
+| **Fable 5 + BB** | **0 files** | **86K** | **Best** — cross-domain analytical connections from accumulated state |
+| Fable 5 (no BB) | 70 pages | 146K | Thorough but isolated — no cross-query insight transfer |
+| Opus 4.6 + BB | 0 files | 66K | Strong structure, zero file reads |
+| Sonnet 4.6 + BB | 5 files | 123K | Competent but generic |
+| Haiku 4.5 + BB | 35 pages | 98K | Material factual errors |
+
+Full experiment data: [`examples/datadog-strategic-analysis/comparison/experiment/`](examples/datadog-strategic-analysis/comparison/experiment/). Detailed methodology and results: [`packages/blackboard-mcp/README.md`](packages/blackboard-mcp/README.md#multi-model-scaling-experiment).
+
+---
+
+We're actively adapting the system to run across multiple benchmarks spanning different fields of knowledge work. The swarm framework is being generalized with benchmark adapters so we can evaluate against diverse task types and domains.
+
+We're a small team, and benchmark runs at scale take real compute and time. We'll be releasing results as we complete them. If you're working on benchmarks for knowledge-intensive tasks and would be interested in partnering or having irys-stateful-swarms evaluated on your benchmark, reach out at [devansh@iqidis.ai](mailto:devansh@iqidis.ai).
 
 ## Installation
 

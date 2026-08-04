@@ -2,7 +2,7 @@
 
 Persistent structured reasoning for AI agents. Zero API calls, zero cost.
 
-Blackboard MCP gives any AI agent — Claude Code, Codex, or anything that speaks MCP — a shared, typed, provenance-tracked knowledge base that persists across sessions. Instead of treating every interaction as a fresh start, agents build cumulative analytical state: observations grounded in source documents, analyses with confidence scores, calculations with supporting evidence, and gaps that flag what's still missing. The blackboard survives between sessions, so the next agent picks up where the last one left off.
+Blackboard MCP gives any AI agent (Claude Code, Codex, or anything that speaks MCP) a shared, typed, provenance-tracked knowledge base that persists across sessions. Instead of treating every interaction as a fresh start, agents build cumulative analytical state: observations grounded in source documents, analyses with confidence scores, calculations with supporting evidence, and gaps that flag what's still missing. The blackboard survives between sessions, so the next agent picks up where the last one left off.
 
 ## Quick start
 
@@ -68,7 +68,7 @@ node dist/index.js
 
 ## SWE-bench Verified results
 
-On [SWE-bench Verified](https://www.swebench.com/) (500 real GitHub issues), Sonnet 4.6 + Blackboard MCP resolved **73% of evaluated instances** using only a minimal API wrapper — no file navigation, no shell tools, no retry logic. Claude Code's fully-engineered agent scaffold achieves 79.6% with the same model. Codex CLI achieves 69.2% with o4-mini.
+On [SWE-bench Verified](https://www.swebench.com/) (500 real GitHub issues), Sonnet 4.6 + Blackboard MCP resolved **73% of evaluated instances** using only a minimal API wrapper: no file navigation, no shell tools, no retry logic. Claude Code's fully-engineered agent scaffold achieves 79.6% with the same model. Codex CLI achieves 69.2% with o4-mini.
 
 A bare-bones scaffold with Blackboard MCP achieved 92% of Claude Code's performance and beat Codex CLI outright. The reasoning quality comes from the blackboard. If you're using Blackboard MCP inside Claude Code or Codex, you're running a better scaffold than what produced these numbers.
 
@@ -76,23 +76,23 @@ Full results: [`benchmarks/swebench/`](../../benchmarks/swebench/)
 
 ## Multi-model scaling experiment
 
-We ran a controlled experiment to test whether blackboard state improves output quality — not just cost — across different models. Five configurations (Opus 4.6, Sonnet 4.6, Haiku 4.5, Fable 5 with blackboard, and Fable 5 without) each answered five sequential queries against Datadog's full public SEC filing corpus (1,857 files, 520 MB). Each blackboard-equipped model accumulated state across queries; the control started fresh every time.
+We ran a controlled experiment to test whether blackboard state improves output quality, not just cost, across different models. Five configurations (Opus 4.6, Sonnet 4.6, Haiku 4.5, Fable 5 with blackboard, and Fable 5 without) each answered five sequential queries against Datadog's full public SEC filing corpus (1,857 files, 520 MB). Each blackboard-equipped model accumulated state across queries; the control started fresh every time.
 
-The final query — a full investment thesis synthesis requiring integration of product, competitive, financial, and risk analysis — revealed the result:
+The final query, a full investment thesis synthesis requiring integration of product, competitive, financial, and risk analysis, revealed the result:
 
 | Config | Q5 file reads | Q5 tokens | Quality |
 |---|---|---|---|
-| **Fable 5 + BB** | **0 files** | **86K** | **Best** — cross-referenced BB entries to derive early-warning thesis from filing language shifts |
-| Fable 5 (no BB) | 70 pages | 146K | Strong — page-level citations, thorough but no cross-domain connections |
-| Opus 4.6 + BB | 0 files | 66K | Strong — structured analysis, identified competitive moat durability |
-| Sonnet 4.6 + BB | 5 files | 123K | Competent but generic — template-like despite 32 BB entries |
-| Haiku 4.5 + BB | 35 pages | 98K | Material factual errors — wrong revenue multiple, missed $1B debt |
+| **Fable 5 + BB** | **0 files** | **86K** | **Best**: cross-referenced BB entries to derive early-warning thesis from filing language shifts |
+| Fable 5 (no BB) | 70 pages | 146K | Strong: page-level citations, thorough but no cross-domain connections |
+| Opus 4.6 + BB | 0 files | 66K | Strong: structured analysis, identified competitive moat durability |
+| Sonnet 4.6 + BB | 5 files | 123K | Competent but generic: template-like despite 32 BB entries |
+| Haiku 4.5 + BB | 35 pages | 98K | Material factual errors: wrong revenue multiple, missed $1B debt |
 
-**The blackboard made Fable produce better output than Opus, while reading zero files.** Fable+BB's synthesis included an insight about tracking disclosure language changes across risk factor filings as early warning signals — a connection that emerged from having risk factor data cross-linked with financial trajectory in the blackboard. This kind of structured cross-referencing doesn't happen when reading raw PDFs in isolation.
+**The blackboard made Fable produce better output than Opus, while reading zero files.** Fable+BB's synthesis included an insight about tracking disclosure language changes across risk factor filings as early warning signals, a connection that emerged from having risk factor data cross-linked with financial trajectory in the blackboard. This kind of structured cross-referencing doesn't happen when reading raw PDFs in isolation.
 
 ### What this means
 
-The blackboard is a **quality amplifier**, not just a cost optimization. Structured accumulation forces the model to cross-reference findings across queries, producing analytical connections that wouldn't emerge from a single-pass read. The strongest models (Fable, Opus) leverage this most effectively. Haiku demonstrates the floor: the blackboard can't compensate for a model that makes factual errors during extraction.
+The blackboard is a **quality amplifier**, not just a cost optimization. Structured accumulation forces the model to cross-reference findings across queries, producing analytical connections that wouldn't emerge from a single-pass read. The strongest models (Fable, Opus) use this most effectively. Haiku demonstrates the floor: the blackboard can't compensate for a model that makes factual errors during extraction.
 
 ### Amortization
 
@@ -112,7 +112,7 @@ Full experiment outputs: [`examples/datadog-strategic-analysis/comparison/experi
 
 ## How it works
 
-An agent working on a complex task creates a blackboard, reads documents, and records typed findings. Each finding carries source provenance (which document, which section, what evidence), confidence scores, and explicit relationships to other findings (supports, contradicts, supersedes). Signals flag open questions the agent needs to answer. The blackboard tracks convergence — how close the analysis is to being complete.
+An agent working on a complex task creates a blackboard, reads documents, and records typed findings. Each finding carries source provenance (which document, which section, what evidence), confidence scores, and explicit relationships to other findings (supports, contradicts, supersedes). Signals flag open questions the agent needs to answer. The blackboard tracks convergence: how close the analysis is to being complete.
 
 When the analysis is done, `bb_export` creates a self-contained interactive HTML visualization you can open in any browser. No server needed.
 
@@ -128,7 +128,7 @@ Blackboard MCP exposes 14 tools:
 |------|-------------|
 | `bb_create` | Create a new blackboard with a task description |
 | `bb_add_document` | Register a document as a source (text content + metadata) |
-| `bb_add_entries` | Record findings — observations, analyses, calculations, strategies, gaps |
+| `bb_add_entries` | Record findings: observations, analyses, calculations, strategies, gaps |
 | `bb_add_signal` | Flag an open question or gap that needs investigation |
 | `bb_iterate` | Advance the blackboard to the next iteration |
 
@@ -137,7 +137,7 @@ Blackboard MCP exposes 14 tools:
 | Tool | What it does |
 |------|-------------|
 | `bb_list` | List all blackboards in this project. **Call this first.** |
-| `bb_get_state` | Get full blackboard state — entries, signals, documents, health |
+| `bb_get_state` | Get full blackboard state: entries, signals, documents, health |
 | `bb_search` | Search entries by content, type, source, or confidence |
 | `bb_mark_read` | Mark a document section as read (tracks reading progress) |
 
@@ -145,8 +145,8 @@ Blackboard MCP exposes 14 tools:
 
 | Tool | What it does |
 |------|-------------|
-| `bb_convergence` | Check if the analysis is ready — flags blockers, disputed entries, unread sources |
-| `bb_synthesis` | Assemble the final answer from blackboard state — includes must-include entries, disputes, gaps |
+| `bb_convergence` | Check if the analysis is ready: flags blockers, disputed entries, unread sources |
+| `bb_synthesis` | Assemble the final answer from blackboard state: includes must-include entries, disputes, gaps |
 
 ### Persistence and visualization
 
@@ -154,7 +154,7 @@ Blackboard MCP exposes 14 tools:
 |------|-------------|
 | `bb_snapshot` | Save a named milestone snapshot (e.g., "after initial reading", "pre-synthesis") |
 | `bb_diagram` | Generate a Mermaid graph of the reasoning topology |
-| `bb_export` | Export an interactive HTML visualization — self-contained, opens in any browser |
+| `bb_export` | Export an interactive HTML visualization: self-contained, opens in any browser |
 
 ## Entry types
 
@@ -172,40 +172,40 @@ Every finding recorded on the blackboard has a type:
 
 Entries connect to each other explicitly:
 
-- **supports_entries** — this finding backs up another finding
-- **contradicts_entries** — this finding conflicts with another
-- **supersedes_entries** — this finding replaces an outdated one
-- **addresses_signals** — this finding answers an open question
-- **opens_questions** — this finding raises a new question
+- **supports_entries**: this finding backs up another finding
+- **contradicts_entries**: this finding conflicts with another
+- **supersedes_entries**: this finding replaces an outdated one
+- **addresses_signals**: this finding answers an open question
+- **opens_questions**: this finding raises a new question
 
-These relationships form a directed graph. The HTML export visualizes this graph interactively — you can see how evidence flows, where contradictions exist, and which conclusions are well-supported vs. fragile.
+These relationships form a directed graph. The HTML export visualizes this graph interactively, so you can see how evidence flows, where contradictions exist, and which conclusions are well-supported vs. fragile.
 
 ## Interactive HTML export
 
 `bb_export` produces a self-contained HTML file with:
 
-- **Force-directed graph** — nodes are findings, edges are relationships, colors indicate type
-- **Briefing tab** — narrative summary with key conclusions, evidence chains, and contradictions
-- **Detail panel** — click any node to see full content, source evidence, confidence, and connected findings
-- **Insights tab** — cross-document analysis, reasoning chains, source dependency mapping
-- **Sources tab** — document coverage, topic clustering, reading progress
-- **Iteration playback** — step through how the analysis evolved over time
-- **Filters** — by type, status, confidence threshold, iteration, or search query
-- **Keyboard shortcuts** — `1-4` switch tabs, `Tab`/`Shift+Tab` cycle findings, `F` fit view, `Esc` deselect
+- **Force-directed graph**: nodes are findings, edges are relationships, colors indicate type
+- **Briefing tab**: narrative summary with key conclusions, evidence chains, and contradictions
+- **Detail panel**: click any node to see full content, source evidence, confidence, and connected findings
+- **Insights tab**: cross-document analysis, reasoning chains, source dependency mapping
+- **Sources tab**: document coverage, topic clustering, reading progress
+- **Iteration playback**: step through how the analysis evolved over time
+- **Filters**: by type, status, confidence threshold, iteration, or search query
+- **Keyboard shortcuts**: `1-4` switch tabs, `Tab`/`Shift+Tab` cycle findings, `F` fit view, `Esc` deselect
 
 No server required. Just open the HTML file in a browser.
 
 ## Screenshots
 
-**Graph overview with briefing panel** — force-directed graph of 146 findings from a Datadog financial analysis. The briefing tab shows the bottom line, trust audit, and key conclusions with source attribution.
+**Graph overview with briefing panel**: force-directed graph of 146 findings from a Datadog financial analysis. The briefing tab shows the bottom line, trust audit, and key conclusions with source attribution.
 
 ![Graph overview with briefing panel](screenshots/graph-overview.png)
 
-**Node detail panel** — clicking any node reveals full content, confidence score, source provenance, tags, and all connected findings with their relationship types (supports, contradicts).
+**Node detail panel**: clicking any node reveals full content, confidence score, source provenance, tags, and all connected findings with their relationship types (supports, contradicts).
 
 ![Node detail panel](screenshots/node-detail.png)
 
-**Source fragility analysis** — the skeptic lens shows what breaks if you remove each source document. Source coverage bars track reading progress across all documents in the corpus.
+**Source fragility analysis**: the skeptic lens shows what breaks if you remove each source document. Source coverage bars track reading progress across all documents in the corpus.
 
 ![Source fragility analysis](screenshots/source-analysis.png)
 
@@ -251,7 +251,7 @@ All state is stored as JSON files in `.blackboard/<id>/`:
 └── exports/                # Named exports (bb_export with path)
 ```
 
-No database. No external services. No API calls. Just files on disk.
+No database, no external services, no API calls, just files on disk.
 
 ## License
 

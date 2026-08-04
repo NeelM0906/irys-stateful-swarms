@@ -1,6 +1,6 @@
 {
   "name": "@iqidis/blackboard-mcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Persistent blackboard reasoning for AI agents. Zero API calls, zero cost. Works with Claude Code and Codex.",
   "type": "module",
   "bin": {
