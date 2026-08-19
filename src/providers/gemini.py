@@ -90,6 +90,10 @@ class GeminiCaller:
                         "503",
                         "502",
                         "500",
+                        # intermittent provider-side 403s on new models are
+                        # transient capacity denials, not real auth failures
+                        "403",
+                        "permission_denied",
                         "quota",
                         "resource",
                         "deadline",
