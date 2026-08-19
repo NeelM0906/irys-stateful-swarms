@@ -190,33 +190,6 @@ def controller_decide(smart_caller, board: Board, last_summary: dict, *,
         for r in proposed_reads[:20]
     )
 
-    # Materialize the catalog before prompt construction; the read lane is
-    # active only when THIS exact call rendered a valid frontier page — judged
-    # from the events this render emitted, never from earlier same-iteration
-    # renders, task metadata, or corpus names.
-    events_before = len(board.events)
-    sources_text = catalog_summary(board)
-    read_lane_active = any(
-        e.kind == "frontier_page"
-        and isinstance(e.detail, dict)
-        and e.detail.get("shown_source_ids")
-        and not e.detail.get("validation_failed")
-        for e in board.events[events_before:]
-    )
-    if read_lane_active:
-        action_budget_text = (
-            f"Up to {MAX_ACTIONS_PER_ITERATION} read actions (distinct, high-value "
-            f"unread sources — spread reads across open material targets where "
-            f"useful; do not pad with low-value documents) AND up to "
-            f"{MAX_ACTIONS_PER_ITERATION} search/bind/analyze/verify actions. "
-            "Actions run in parallel — make them independent."
-        )
-    else:
-        action_budget_text = (
-            f"Max {MAX_ACTIONS_PER_ITERATION} actions. "
-            "Actions run in parallel — make them independent."
-        )
-
     prompt = f"""You are the controller of an investigation. Each round you decide: which questions to resolve (close/waive/block), and what work to dispatch next. You are a scheduler — workers do the deep reasoning; you allocate effort where it moves the answer most.
 
 TASK:
@@ -246,7 +219,7 @@ ANALYST CLOSE RECOMMENDATIONS FROM LAST ROUND:
 LAST ROUND RESULTS: {json.dumps(last_summary)}
 
 SOURCES:
-{sources_text}
+{catalog_summary(board)}
 
 PROPOSED READS FROM LAST ROUND:
 {proposed_reads_text if proposed_reads_text else '(none)'}
@@ -274,7 +247,7 @@ Return JSON:
  "actions": [{{"kind": "read|search|bind|analyze|verify", ...params}}],
  "converge": true/false,
  "converge_reason": "<if converging>"}}
-{action_budget_text}"""
+Max {MAX_ACTIONS_PER_ITERATION} actions. Actions run in parallel — make them independent."""
 
     parsed = call_json(smart_caller, board, prompt, kind="controller", max_tokens=8192)
     if not isinstance(parsed, dict):
@@ -303,29 +276,11 @@ Return JSON:
         ob.reason = str(u.get("reason", ""))[:300]
         updates += 1
 
-    valid_actions = [
+    actions = [
         a for a in parsed.get("actions", [])
         if isinstance(a, dict) and a.get("kind") in
         ("read", "search", "bind", "analyze", "verify")
-    ]
-    if read_lane_active:
-        # Dedicated read lane: reads and state work stop competing for the
-        # same slots. Response order is preserved; each lane caps at the
-        # existing per-iteration maximum, so max reads/iteration is unchanged.
-        actions = []
-        reads_accepted = other_accepted = 0
-        for a in valid_actions:
-            if a.get("kind") == "read":
-                if reads_accepted < MAX_ACTIONS_PER_ITERATION:
-                    actions.append(a)
-                    reads_accepted += 1
-            elif other_accepted < MAX_ACTIONS_PER_ITERATION:
-                actions.append(a)
-                other_accepted += 1
-    else:
-        actions = valid_actions[:MAX_ACTIONS_PER_ITERATION]
-        reads_accepted = sum(1 for a in actions if a.get("kind") == "read")
-        other_accepted = len(actions) - reads_accepted
+    ][:MAX_ACTIONS_PER_ITERATION]
 
     # Gate: critical/high targets with unanalyzed evidence must not be waived
     # until at least one analyze pass has run. Reopens premature waives and
@@ -337,22 +292,7 @@ Return JSON:
         f"iter {board.iteration}: {updates} target updates, "
         f"{len(actions)} actions, converge={bool(parsed.get('converge'))}",
         detail={"reasoning": str(parsed.get("reasoning", ""))[:500],
-                "actions": [a.get("kind") for a in actions],
-                "frontier_read_lane_active": read_lane_active,
-                "reads_proposed": sum(1 for a in valid_actions
-                                      if a.get("kind") == "read"),
-                "reads_accepted": reads_accepted,
-                "nonread_proposed": sum(1 for a in valid_actions
-                                        if a.get("kind") != "read"),
-                "nonread_accepted": other_accepted,
-                "accepted_read_source_ids": [
-                    a.get("source_id") for a in actions
-                    if a.get("kind") == "read"
-                ],
-                "accepted_read_target_ids": [
-                    a.get("target_ids") for a in actions
-                    if a.get("kind") == "read"
-                ]},
+                "actions": [a.get("kind") for a in actions]},
     )
     return {
         "actions": actions,
