@@ -1,5 +1,19 @@
 # Experiments Log
 
+## ⚠ Era boundary: benchmark updated (2026-08-19)
+
+Harvey LAB was updated upstream (v1.0): 2,010 tasks across 27 families (was 1,251/24), including a new 250-task enterprise-search family over a shared 9,288-document corpus, expanded contracts/diligence sets, and rubric revisions. **All results below this section were measured on the pre-update benchmark and are not comparable to post-update runs.** A fresh randomized 54-task baseline (2 per family) opens the new era; the smoke ladder is now 27/54/270.
+
+Model routing for the new era is fixed as a two-tier deployment configuration (values in the untracked `.env`, per repo publication policy) so that all cross-cycle deltas attribute to structural changes only.
+
+---
+
+## Pre-update era summary (v30–v34, June 2026)
+
+Narrative entries for v30–v34 were logged in `ledger.jsonl` but never summarized here. Arc: provenance-architecture iterations (blackboard-as-index with source-span hydration) peaked at 91.7% criteria macro (v31); subsequent routing ablations traded a few points of macro for large cost reductions, and v34 (87.8%) was locked as the final pre-update production config. v35–v36 runs exist under `results/` but were not ledger-logged (hygiene gap noted 2026-08-19).
+
+---
+
 ## v29d: GPT-5.5 Synthesis (2026-06-15)
 **Config**: `SWARM_SYNTHESIS_MODEL=gpt-5.5` + flash-lite worker + flash smart | **Commit**: `372304a` | **Status**: completed
 
