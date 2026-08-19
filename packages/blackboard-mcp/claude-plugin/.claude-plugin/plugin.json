@@ -1,0 +1,9 @@
+{
+  "name": "blackboard-mcp",
+  "description": "Persistent, typed, provenance-tracked blackboard reasoning for AI agents. Zero API calls, zero cost.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Irys"
+  },
+  "license": "MIT"
+}

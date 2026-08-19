@@ -21,10 +21,10 @@
 - [Full benchmark results](#full-benchmark-results)
 - [How stateful swarms reason](#how-stateful-swarms-reason)
 - [Why stateful swarms matter](#why-stateful-swarms-matter)
+- [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
 - [Beyond legal: domain-agnostic](#beyond-legal-the-stateful-swarm-paradigm-is-domain-agnostic)
   - [SWE-bench Verified](#swe-bench-verified-blackboard-mcp-achieves-73-of-claude-codes-performance-with-a-minimal-scaffold)
   - [Datadog 10-K strategic analysis](#datadog-10-k-strategic-analysis)
-- [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Contributing](#contributing)
@@ -416,6 +416,67 @@ This is the persistence layer that makes stateful swarms practical in production
 
 A production stateful swarm combines coordination (irys-stateful-swarms) with improved reasoning (Latent Space), better representations (Fractal Embeddings, CTI), and persistent matter-level memory (MapU). Each layer reinforces the others — better reasoning produces higher-quality state, better representations improve cross-reference detection within that state, and persistent memory ensures none of it is ever discarded. We're releasing each piece independently so the community can explore these directions.
 
+## Blackboard MCP: use stateful reasoning in Claude Code and Codex
+
+The blackboard reasoning system that powers irys-stateful-swarms is available as a standalone MCP server at [`packages/blackboard-mcp/`](packages/blackboard-mcp/). It gives any AI agent persistent structured reasoning — zero API calls, zero cost.
+
+**What it does:** 14 tools for creating and managing blackboards — typed entries (observation, analysis, calculation, strategy, gap), automatic contradiction detection with confidence decay, signal tracking for open questions, convergence gating that blocks premature synthesis, cross-session persistence, and document provenance. The intelligence comes from the agent. The blackboard just provides structured state management as pure computation.
+
+**Why it matters:** When you install this in Claude Code or Codex, your agent gains the ability to build persistent analytical state. A blackboard created during one session is discoverable in the next — the agent calls `bb_list`, finds prior work, and extends it instead of starting from scratch. Complex multi-document analysis, contradiction tracking, gap identification, and evidence-chain building all happen through the blackboard, producing auditable reasoning traces instead of black-box answers.
+
+**Interactive exports:** Call `bb_export` to generate a self-contained HTML file with an interactive knowledge graph — force-directed layout, cluster detection, cross-document synthesis, evidence chains, confidence gauges, and a structured briefing. The export is a single file with zero dependencies that works offline. Share it with anyone; open it in any browser. Mobile responsive with touch navigation.
+
+**Graph overview with briefing panel** — 146 findings from a Datadog financial analysis, with trust audit and source-attributed conclusions:
+
+![Graph overview with briefing panel](packages/blackboard-mcp/screenshots/graph-overview.png)
+
+**Node detail panel** — click any node to see full content, confidence, provenance, tags, and connected findings with relationship types:
+
+![Node detail panel](packages/blackboard-mcp/screenshots/node-detail.png)
+
+**Source fragility analysis** — the skeptic lens shows what breaks if you remove each source document, with reading progress tracking:
+
+![Source fragility analysis](packages/blackboard-mcp/screenshots/source-analysis.png)
+
+### Install
+
+Blackboard MCP is published on npm as [`@iqidis/blackboard-mcp`](https://www.npmjs.com/package/@iqidis/blackboard-mcp), no clone or build required.
+
+**Claude Code** (one-liner, from your project root):
+```bash
+claude mcp add blackboard -- npx @iqidis/blackboard-mcp
+```
+
+Or add directly to `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "blackboard": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@iqidis/blackboard-mcp"]
+    }
+  }
+}
+```
+
+**Codex CLI** (add to `~/.codex/config.toml`):
+```toml
+[mcp_servers.blackboard]
+command = "npx"
+args = ["-y", "@iqidis/blackboard-mcp"]
+```
+
+**From source** (if you're working inside this repo directly):
+```bash
+cd packages/blackboard-mcp && npm install && npm run build
+node dist/index.js
+```
+
+A packaged Claude Code plugin is also available at [`packages/blackboard-mcp/claude-plugin/`](packages/blackboard-mcp/claude-plugin/) for marketplace-style installs.
+
+Once configured, the agent automatically uses the blackboard for complex analysis tasks and skips it for simple questions. See [`packages/blackboard-mcp/SETUP.md`](packages/blackboard-mcp/SETUP.md) for details.
+
 ## Beyond legal: the stateful swarm paradigm is domain-agnostic
 
 irys-stateful-swarms was validated on the Harvey LAB benchmark, but the underlying paradigm — task decomposition, persistent blackboard state-building, multi-agent coordination with typed provenance — is not legal-specific. Any domain where professionals build understanding over time through repeated analysis of complex documents is a domain where stateful swarms outperform stateless approaches: financial due diligence, regulatory compliance, medical research synthesis, insurance underwriting, patent analysis, investigative journalism.
@@ -463,58 +524,6 @@ Full experiment data: [`examples/datadog-strategic-analysis/comparison/experimen
 We're actively adapting the system to run across multiple benchmarks spanning different fields of knowledge work. The swarm framework is being generalized with benchmark adapters so we can evaluate against diverse task types and domains.
 
 We're a small team, and benchmark runs at scale take real compute and time. We'll be releasing results as we complete them. If you're working on benchmarks for knowledge-intensive tasks and would be interested in partnering or having irys-stateful-swarms evaluated on your benchmark, reach out at [devansh@iqidis.ai](mailto:devansh@iqidis.ai).
-
-## Blackboard MCP: use stateful reasoning in Claude Code and Codex
-
-The blackboard reasoning system that powers irys-stateful-swarms is available as a standalone MCP server at [`packages/blackboard-mcp/`](packages/blackboard-mcp/). It gives any AI agent persistent structured reasoning — zero API calls, zero cost.
-
-**What it does:** 12 tools for creating and managing blackboards — typed entries (observation, analysis, calculation, strategy, gap), automatic contradiction detection with confidence decay, signal tracking for open questions, convergence gating that blocks premature synthesis, cross-session persistence, and document provenance. The intelligence comes from the agent. The blackboard just provides structured state management as pure computation.
-
-**Why it matters:** When you install this in Claude Code or Codex, your agent gains the ability to build persistent analytical state. A blackboard created during one session is discoverable in the next — the agent calls `bb_list`, finds prior work, and extends it instead of starting from scratch. Complex multi-document analysis, contradiction tracking, gap identification, and evidence-chain building all happen through the blackboard, producing auditable reasoning traces instead of black-box answers.
-
-**Interactive exports:** Call `bb_export` to generate a self-contained HTML file with an interactive knowledge graph — force-directed layout, cluster detection, cross-document synthesis, evidence chains, confidence gauges, and a structured briefing. The export is a single file with zero dependencies that works offline. Share it with anyone; open it in any browser. Mobile responsive with touch navigation.
-
-**Graph overview with briefing panel** — 146 findings from a Datadog financial analysis, with trust audit and source-attributed conclusions:
-
-![Graph overview with briefing panel](packages/blackboard-mcp/screenshots/graph-overview.png)
-
-**Node detail panel** — click any node to see full content, confidence, provenance, tags, and connected findings with relationship types:
-
-![Node detail panel](packages/blackboard-mcp/screenshots/node-detail.png)
-
-**Source fragility analysis** — the skeptic lens shows what breaks if you remove each source document, with reading progress tracking:
-
-![Source fragility analysis](packages/blackboard-mcp/screenshots/source-analysis.png)
-
-### Install
-
-Clone this repo, build the server, and point your config at it:
-
-```bash
-cd packages/blackboard-mcp && npm install && npm run build
-```
-
-**Claude Code** — add to `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "blackboard": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/path/to/packages/blackboard-mcp/dist/index.js"]
-    }
-  }
-}
-```
-
-**Codex CLI** — add to `.codex/config.toml`:
-```toml
-[mcp_servers.blackboard]
-command = "node"
-args = ["/path/to/packages/blackboard-mcp/dist/index.js"]
-```
-
-Once configured, the agent automatically uses the blackboard for complex analysis tasks and skips it for simple questions. See [`packages/blackboard-mcp/SETUP.md`](packages/blackboard-mcp/SETUP.md) for details.
 
 ## Installation
 
