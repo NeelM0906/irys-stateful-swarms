@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from .actions import execute_actions
+from .actions import bulk_extract_frontier, execute_actions, finalize_bulk_extraction
 from .control import (
     _force_analysis_gate,
     blackboard_audit, controller_decide, maintain_ledger, reframe_ledger,
@@ -66,6 +66,10 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
     # Think before reading; triage before thinking about everything.
     seed_targets(synth, board)
     triage_sources(smart, board)
+    # Large validated frontiers get one bulk extraction pass over every
+    # definite candidate before the controller loop (dormant elsewhere).
+    bulk = bulk_extract_frontier(board, worker_caller)
+    finalize_bulk_extraction(board, bulk, BUDGET_STOP_PCT)
     board.snapshot("seed")
 
     last_summary: dict = {}

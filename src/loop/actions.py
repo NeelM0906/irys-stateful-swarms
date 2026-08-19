@@ -832,3 +832,324 @@ def _targets_brief(board: Board, target_ids: list[str]) -> str:
     if not targets:
         targets = board.material_open_targets()[:8]
     return "\n".join(f"- [{t.materiality}] {t.need}" for t in targets) or "- (general extraction)"
+
+
+# --- BULK FRONTIER EXTRACTION (cycle-3 treatment) ---
+
+_BULK_WAVE = 30           # max parallel calls per wave
+_BULK_MAX_TOKENS = 16384  # bounded output budget per source call
+_BULK_FRAMING_TOKENS = 200  # conservative allowance for request framing
+
+
+def _bulk_prompt(board: Board, src: Source, text: str,
+                 assoc: list[str], reasons: list[str]) -> str:
+    return f"""You are extracting evidence from one document for an investigation. Metadata triage selected this document as decisive for specific questions.
+
+TASK:
+{board.instruction[:2000]}
+
+QUESTIONS THIS DOCUMENT WAS SELECTED FOR:
+{_targets_brief(board, assoc)}
+
+WHY IT WAS SELECTED (metadata signals): {'; '.join(reasons) or '(none)'}
+
+DOCUMENT: {src.name}
+---
+{text}
+---
+
+Return JSON:
+{{"claims": [{{"kind": "observation", "content": "<the fact, specific and self-contained>", "section": "<section/heading it came from>", "evidence": "<short exact quote copied verbatim from the document>", "confidence": 0.0-1.0}}]}}
+
+Rules:
+- Extract every fact relevant to the questions above, plus clearly material facts for the task. Atomic claims — one fact each.
+- evidence must be copied verbatim from the document; it locates the source span. Never paraphrase it, never include a number that does not appear in the quoted text.
+- If the document holds nothing relevant, return {{"claims": []}} — an empty list is a valid answer.
+- No proposals, no recommendations, no new questions — observations grounded in this document only."""
+
+
+def _estimate_input_bound(prompt: str) -> int:
+    """Tokenizer-independent hard upper bound on input tokens: one token per
+    encoded byte (a byte-level tokenizer cannot emit more tokens than bytes)
+    plus request framing."""
+    return len(prompt.encode("utf-8")) + _BULK_FRAMING_TOKENS
+
+
+def _estimate_call_tokens(prompt: str) -> int:
+    """Hard worst-case bound for one call: input bound + worst-case output."""
+    return _estimate_input_bound(prompt) + _BULK_MAX_TOKENS
+
+
+def _valid_bulk_extraction(parsed) -> dict | None:
+    """Strict response validation. Returns a cleaned payload or None.
+
+    Contract: `claims` must be a list. An EMPTY list is a valid
+    'read, no relevant evidence' result. A non-list, or a non-empty list
+    containing zero well-formed claim objects, is a parse failure.
+    """
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("claims"), list):
+        return None
+    raw = parsed["claims"]
+    cleaned = [
+        c for c in raw
+        if isinstance(c, dict) and str(c.get("content", "")).strip()
+    ]
+    if raw and not cleaned:
+        return None
+    return {"claims": cleaned}
+
+
+def bulk_extract_frontier(board: Board, worker_caller) -> dict:
+    """Extract every retained definite frontier candidate in one target-guided
+    call per canonical source, in bounded parallel waves, before the
+    controller loop. Claims bind immediately to ALL retained target
+    associations for the source. Activates only on a validated large-corpus
+    frontier; every other path is untouched.
+
+    Emits the start event only; run_loop applies the budget offset and emits
+    the single completion event via finalize_bulk_extraction so the completion
+    record can carry the adjusted budget. Returns structural stats
+    ({} when inactive).
+    """
+    from .triage import _valid_frontier  # shared validator — no second copy
+
+    doc_count = sum(1 for s in board.sources if s.kind == "document")
+    frontier = board.metadata.get("retrieval_frontier")
+    fallback = board.metadata.get("retrieval_fallback")
+    if (doc_count <= 60
+            or not board.metadata.get("retrieval_frontier_enabled")
+            or not _valid_frontier(board, frontier, fallback)):
+        return {}
+
+    # Pass 1: canonical source ids retained with a definite record anywhere.
+    ordered: list[str] = []
+    for tid, lst in frontier.items():
+        for c in lst:
+            if c["priority"] == "definite" and c["source_id"] not in ordered:
+                ordered.append(c["source_id"])
+    # Pass 2: for selected ids, collect EVERY retained association and reason
+    # across the full frontier, regardless of that record's priority.
+    assoc: dict[str, list[str]] = {sid: [] for sid in ordered}
+    reasons: dict[str, list[str]] = {sid: [] for sid in ordered}
+    for tid, lst in frontier.items():
+        for c in lst:
+            sid = c["source_id"]
+            if sid not in assoc:
+                continue
+            if tid not in assoc[sid]:
+                assoc[sid].append(tid)
+            if c["reason"] and c["reason"] not in reasons[sid]:
+                reasons[sid].append(c["reason"])
+
+    candidates = []
+    for sid in ordered:
+        src = board.find_source(sid)
+        if src is not None and src.kind == "document" and src.read_status != "read":
+            candidates.append(sid)
+    if not candidates:
+        return {}
+
+    envelope = board.token_budget  # hard bulk envelope = original loop budget
+    stats = {"candidates": len(candidates), "attempted": 0, "calls": 0,
+             "succeeded": 0, "parse_failed": 0, "call_failed": 0,
+             "text_load_failed": 0, "budget_skipped": 0, "claims_added": 0,
+             "claims_bound": 0, "span_exact": 0, "span_fuzzy": 0,
+             "span_fallback": 0, "sources_read": 0,
+             "sources_with_accepted_claims": 0, "waves": 0,
+             "max_parallelism": 0, "failed_call_reserved_tokens": 0}
+
+    import time as _time
+    t0 = _time.time()  # includes preflight materialization time
+
+    # Preflight: render every candidate's actual prompt once; keep the text
+    # (documents cache their materialization) and hard per-call bounds.
+    texts: dict[str, str] = {}
+    input_bounds: dict[str, int] = {}
+    estimates: dict[str, int] = {}
+    render_failures = 0
+    for sid in candidates:
+        src = board.find_source(sid)
+        try:
+            text = src.text()
+        except Exception:
+            text = ""
+        if not text:  # exception or empty materialization — both unrenderable
+            texts[sid] = ""
+            input_bounds[sid] = 0
+            estimates[sid] = 0
+            render_failures += 1
+            continue
+        texts[sid] = text
+        prompt = _bulk_prompt(board, src, text, assoc[sid], reasons[sid])
+        input_bounds[sid] = _estimate_input_bound(prompt)
+        estimates[sid] = input_bounds[sid] + _BULK_MAX_TOKENS
+    full_set_estimate = sum(estimates.values())
+    source_bytes = sum(
+        (board.find_source(sid).size_bytes or 0) for sid in candidates
+    )
+
+    tokens_before = board.total_tokens_used
+    tin_before = board.tokens_input
+    tout_before = board.tokens_output
+
+    board.log(
+        "bulk_extraction",
+        f"start: {len(candidates)} definite candidates, full-set worst-case "
+        f"{full_set_estimate} tokens vs envelope {envelope}",
+        detail={
+            "activation": "validated_frontier",
+            "candidates": len(candidates),
+            "target_associations": {sid: assoc[sid] for sid in candidates},
+            "source_bytes": source_bytes,
+            "estimated_input_tokens": sum(input_bounds.values()),
+            "framing_tokens_per_call": _BULK_FRAMING_TOKENS,
+            "worst_case_output_per_call": _BULK_MAX_TOKENS,
+            "estimated_tokens_full_set": full_set_estimate,
+            # unknown/false when any candidate failed to render
+            "full_set_estimated_fit": (render_failures == 0
+                                       and full_set_estimate <= envelope),
+            "render_failures": render_failures,
+            "envelope_tokens": envelope,
+        },
+    )
+
+    def _one(sid: str) -> tuple[str, dict | None, str]:
+        src = board.find_source(sid)
+        text = texts[sid]
+        prompt = _bulk_prompt(board, src, text, assoc[sid], reasons[sid])
+        try:
+            parsed = call_json(worker_caller, board, prompt,
+                               kind="bulk_extract", max_tokens=_BULK_MAX_TOKENS)
+        except Exception as exc:
+            return sid, None, f"call: {exc}"
+        cleaned = _valid_bulk_extraction(parsed)
+        if cleaned is None:
+            return sid, None, "parse"
+        return sid, cleaned, ""
+
+    idx = 0
+    while idx < len(candidates):
+        # Dynamic wave sizing against a HARD envelope: admit candidates while
+        # actual-spend-so-far + summed worst-case bounds stay inside it. The
+        # bound is tokenizer-independent (tokens <= encoded bytes), so a
+        # launched wave can never breach the envelope; actual spend feeds back
+        # between waves, so admission capacity regrows as reality undershoots
+        # the bound.
+        # A call that raised may have consumed tokens the caller never
+        # reported; its worst-case reservation stays charged against the
+        # envelope instead of being released for reuse.
+        spent = (board.total_tokens_used - tokens_before
+                 + stats["failed_call_reserved_tokens"])
+        remaining = envelope - spent
+        wave: list[str] = []
+        wave_worst = 0
+        j = idx
+        while j < len(candidates) and len(wave) < _BULK_WAVE:
+            sid = candidates[j]
+            worst = estimates[sid] if texts[sid] else 0
+            if texts[sid] and wave_worst + worst > remaining:
+                break
+            wave.append(sid)
+            wave_worst += worst
+            j += 1
+        if not wave:
+            stats["budget_skipped"] = len(candidates) - idx
+            break
+        stats["waves"] += 1
+        launchable = [sid for sid in wave if texts[sid]]
+        stats["max_parallelism"] = max(stats["max_parallelism"],
+                                       len(launchable))
+        for sid in wave:
+            stats["attempted"] += 1
+            if not texts[sid]:
+                stats["text_load_failed"] += 1
+        results: dict[str, tuple] = {}
+        with ThreadPoolExecutor(max_workers=_BULK_WAVE) as pool:
+            futures = {pool.submit(_one, sid): sid for sid in launchable}
+            for fut in as_completed(futures):
+                sid = futures[fut]
+                _, parsed, err = fut.result()
+                results[sid] = (parsed, err)
+        stats["calls"] += len(launchable)
+        # Deterministic state mutation: ingest in candidate order, not
+        # completion order, so claim ids and board order are reproducible.
+        for sid in wave:
+            if sid not in results:
+                continue
+            parsed, err = results[sid]
+            if parsed is None:
+                if err.startswith("call"):
+                    stats["call_failed"] += 1
+                    stats["failed_call_reserved_tokens"] += estimates[sid]
+                else:
+                    stats["parse_failed"] += 1
+                continue
+            src = board.find_source(sid)
+            out = _ingest_claims(
+                parsed, board, source=src,
+                created_by=f"bulk_extract:{sid}",
+                bind_to=assoc[sid],
+                span_text=texts[sid],
+            )
+            stats["succeeded"] += 1
+            added = out.get("claims", 0)
+            stats["claims_added"] += added
+            stats["claims_bound"] += added  # bind_to applied at ingest
+            if added:
+                stats["sources_with_accepted_claims"] += 1
+            stats["span_exact"] += out.get("span_hits", 0)
+            stats["span_fuzzy"] += out.get("span_tfidf_hits", 0)
+            stats["span_fallback"] += out.get("span_misses", 0)
+            src.read_status = "read"
+            stats["sources_read"] += 1
+        idx += len(wave)
+
+    bulk_tokens = board.total_tokens_used - tokens_before
+    n = len(candidates)
+    stats.update({
+        "bulk_tokens": bulk_tokens,
+        "bulk_tokens_input": board.tokens_input - tin_before,
+        "bulk_tokens_output": board.tokens_output - tout_before,
+        "envelope_respected": bulk_tokens <= envelope,
+        "all_candidates_attempted": stats["budget_skipped"] == 0,
+        "attempt_rate": round(stats["attempted"] / n, 4),
+        # Criterion-facing: share of retained candidates that produced a
+        # valid parsed extraction (text-load failures count against it).
+        "parse_success_rate": round(stats["succeeded"] / n, 4),
+        "valid_response_rate_per_call": round(
+            stats["succeeded"] / stats["calls"], 4) if stats["calls"] else 0.0,
+        "evidence_conversion_rate": round(
+            stats["sources_with_accepted_claims"] / n, 4),
+        "wall_time_s": round(_time.time() - t0, 1),
+        "original_budget": envelope,
+    })
+    return stats
+
+
+def finalize_bulk_extraction(board: Board, stats: dict,
+                             budget_stop_pct: float) -> None:
+    """Apply the loop budget offset and emit the single completion event.
+
+    Called once by run_loop directly after bulk_extract_frontier so the
+    completion record carries the adjusted budget. The offset preserves the
+    loop's pre-bulk stop-threshold headroom; total spend stays visible.
+    """
+    if not stats:
+        return  # inactive treatment only — every active result completes
+    original = board.token_budget
+    board.token_budget = original + int(
+        stats.get("bulk_tokens", 0) / (budget_stop_pct / 100.0)
+    )
+    detail = dict(stats)
+    detail["adjusted_budget"] = board.token_budget
+    board.log(
+        "bulk_extraction",
+        f"done: {stats['succeeded']}/{stats['candidates']} sources, "
+        f"{stats['claims_added']} claims, {stats['bulk_tokens']} tokens, "
+        f"{stats['waves']} waves"
+        + ("" if stats["envelope_respected"] else " — ENVELOPE EXCEEDED")
+        + ("" if stats["all_candidates_attempted"] else " — CANDIDATES SKIPPED"),
+        detail=detail,
+    )
+
+
