@@ -79,7 +79,9 @@ def ingest_directory(directory: Path, *, lazy: bool = False) -> list[Document]:
 
 def discover_documents(task_dir: Path, docs_path: str | None = None) -> list[Document]:
     if docs_path:
-        ext = Path(docs_path).resolve()
+        raw = Path(docs_path)
+        # Relative paths are relative to the task directory, not the CWD.
+        ext = raw.resolve() if raw.is_absolute() else (task_dir / raw).resolve()
         if ext.is_dir():
             return ingest_directory(ext)
         if ext.is_file():
