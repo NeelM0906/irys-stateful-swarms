@@ -207,7 +207,14 @@ Return JSON:
             src.relevance_reason = reasons.get(sid, "")
 
     candidate_ids = set(strongest)
-    fallback = [s.id for s in docs if s.id not in candidate_ids]
+    # Corpora can contain duplicate source ids (identical files ingested from
+    # several directories share a content-hash id) — fallback is id-unique.
+    fallback: list[str] = []
+    seen_fb: set[str] = set()
+    for s in docs:
+        if s.id not in candidate_ids and s.id not in seen_fb:
+            fallback.append(s.id)
+            seen_fb.add(s.id)
 
     detail = {
         "mode": "frontier", "source_count": len(docs),
@@ -249,10 +256,12 @@ def _valid_frontier(board: Board, frontier, fallback) -> bool:
         return False
     if not isinstance(fallback, list):
         return False
-    # A candidate's batch_index is not free-form: it must equal the batch its
+    # A candidate's batch_index is not free-form: it must equal a batch its
     # source actually occupies in board document order (how triage batches).
-    doc_batch = {s.id: i // _BATCH for i, s in enumerate(
-        s for s in board.sources if s.kind == "document")}
+    # Duplicate ids occupy every batch where an occurrence sits.
+    doc_batch: dict[str, set[int]] = {}
+    for i, s in enumerate(s for s in board.sources if s.kind == "document"):
+        doc_batch.setdefault(s.id, set()).add(i // _BATCH)
     candidate_ids: set[str] = set()
     for tid, lst in frontier.items():
         if not isinstance(tid, str) or board.find_target(tid) is None:
@@ -279,7 +288,7 @@ def _valid_frontier(board: Board, frontier, fallback) -> bool:
             src = board.find_source(sid)
             if src is None or src.kind != "document":
                 return False
-            if c["batch_index"] != doc_batch.get(sid):
+            if c["batch_index"] not in doc_batch.get(sid, ()):
                 return False
             # Behavioral invariants the records encode: contract ordering
             # and the per-target-per-batch retention cap.
@@ -339,15 +348,21 @@ def catalog_summary(board: Board, limit: int = 60) -> str:
     frontier = board.metadata.get("retrieval_frontier")
     fallback = board.metadata.get("retrieval_fallback")
     doc_count = sum(1 for s in board.sources if s.kind == "document")
-    if (board.metadata.get("retrieval_frontier_enabled")
-            and doc_count > _WINDOW
-            and _valid_frontier(board, frontier, fallback)):
-        try:
-            return _frontier_page(board, frontier, limit)
-        except Exception as exc:  # never let a frontier defect blind the controller
-            board.log("frontier_page", f"frontier render failed ({exc}) — "
+    if board.metadata.get("retrieval_frontier_enabled") and doc_count > _WINDOW:
+        if _valid_frontier(board, frontier, fallback):
+            try:
+                return _frontier_page(board, frontier, limit)
+            except Exception as exc:  # never let a frontier defect blind the controller
+                board.log("frontier_page", f"frontier render failed ({exc}) — "
+                                           "legacy catalog used",
+                          detail={"error": str(exc)[:200]})
+        else:
+            # Rejection must never be silent — it is the difference between
+            # "treatment ran" and "treatment quietly disabled".
+            board.log("frontier_page", "frontier metadata failed validation — "
                                        "legacy catalog used",
-                      detail={"error": str(exc)[:200]})
+                      detail={"validation_failed": True,
+                              "iteration": board.iteration})
 
     docs = sorted(
         board.sources,
@@ -431,16 +446,27 @@ def _frontier_page(board: Board, frontier: dict, limit: int) -> str:
     # fallback documents, and non-document sources alike. Unread first (with
     # iteration rotation at full page stride), then read, in board order.
     # No source is ever invisible to the catalog.
+    def _rest(read_state_read: bool) -> list[str]:
+        out: list[str] = []
+        emitted: set[str] = set()
+        for s in board.sources:  # id-unique even when the corpus has dup ids
+            if s.id in seen or s.id in emitted:
+                continue
+            # Read state comes from the canonical indexed source — the read
+            # action mutates only that entry, never duplicate occurrences.
+            canonical = board.find_source(s.id)
+            status = canonical.read_status if canonical else s.read_status
+            if (status == "read") == read_state_read:
+                out.append(s.id)
+                emitted.add(s.id)
+        return out
+
     if len(page) < limit:
-        rest_unread = [s.id for s in board.sources
-                       if s.id not in seen and s.read_status != "read"]
-        fill = _rotate(rest_unread, board.iteration, limit, limit - len(page))
+        fill = _rotate(_rest(False), board.iteration, limit, limit - len(page))
         page += fill
         seen.update(fill)
     if len(page) < limit:
-        rest_read = [s.id for s in board.sources
-                     if s.id not in seen and s.read_status == "read"]
-        fill = _rotate(rest_read, board.iteration, limit, limit - len(page))
+        fill = _rotate(_rest(True), board.iteration, limit, limit - len(page))
         page += fill
         seen.update(fill)
 

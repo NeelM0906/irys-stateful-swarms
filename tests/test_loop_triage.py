@@ -459,6 +459,67 @@ def test_forged_batch_index_falls_back_to_legacy():
     assert _is_legacy(catalog_summary(board, limit=10))
 
 
+def test_duplicate_source_ids_generated_frontier_still_activates():
+    # Real corpora contain identical files ingested from several directories,
+    # which share a content-hash id. The generated frontier must survive that.
+    board = _big_board(80)
+    for i in range(5):  # duplicate entries: same id, different path
+        board.add_source(Source(
+            id=f"s{i}", name=f"copy{i}.txt", path=f"corpus/b/copy{i}.txt",
+            kind="document", size_bytes=1024,
+        ))
+    caller = _FakeCaller([_candidates(("s1", ["t0"], "definite"))])
+    triage_sources(caller, board)
+    assert board.metadata["retrieval_frontier_enabled"] is True
+    fb = board.metadata["retrieval_fallback"]
+    assert len(fb) == len(set(fb))  # fallback is id-unique
+    summary = catalog_summary(board, limit=100)
+    assert "frontier view" in summary  # validation accepts, paging activates
+    rows = [l.split()[0] for l in summary.splitlines() if not l.startswith("...")]
+    assert len(rows) == len(set(rows))  # no duplicate page rows
+
+
+def test_duplicate_id_in_later_batch_validates():
+    # A duplicate occurrence in a different batch makes both batch indices
+    # legitimate for that id.
+    board = _big_board(200)
+    board.add_source(Source(  # duplicate of s10, lands in batch 1 (index 200)
+        id="s10", name="copy.txt", path="corpus/b/copy.txt",
+        kind="document", size_bytes=1024,
+    ))
+    _seed_frontier(board, {"t0": [_rec("s10", batch_index=1)]})
+    summary = catalog_summary(board, limit=10)
+    assert "frontier view" in summary
+
+
+def test_read_source_with_unread_duplicate_does_not_resurrect():
+    board = _big_board(70, n_targets=1)
+    board.add_source(Source(  # duplicate occurrence of s0, stays "unread"
+        id="s0", name="copy.txt", path="corpus/b/copy.txt",
+        kind="document", size_bytes=1024,
+    ))
+    caller = _FakeCaller([_candidates(("s0", ["t0"], "definite"))])
+    triage_sources(caller, board)
+    board.find_source("s0").read_status = "read"  # how the read action mutates
+    lines = catalog_summary(board, limit=5).splitlines()
+    rows = [l for l in lines if not l.startswith("...")]
+    s0_rows = [l for l in rows if l.startswith("s0 ")]
+    # s0 is read: it must not re-enter through unread fill; if rendered at all
+    # it must display as read
+    assert all("[read/" in l for l in s0_rows)
+    unread_rows = [l for l in rows if "[unread/" in l]
+    assert not any(l.startswith("s0 ") for l in unread_rows)
+
+
+def test_validation_rejection_is_logged():
+    board = _big_board(100)
+    _seed_frontier(board, {"ghost": [_rec("s1")]})
+    catalog_summary(board, limit=10)
+    events = [e for e in board.events if e.kind == "frontier_page"
+              and e.detail and e.detail.get("validation_failed")]
+    assert events
+
+
 def test_generated_frontier_passes_validation_and_activates():
     board = _big_board(100)
     caller = _FakeCaller([_candidates(("s1", ["t0"], "definite"))])
