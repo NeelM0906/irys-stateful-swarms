@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .hydration import build_evidence_context, source_claims_for_hydration
@@ -78,6 +80,16 @@ def execute_actions(actions: list[dict], board: Board, worker_caller,
                 continue
             for k, v in (result or {}).items():
                 summary[k] = summary.get(k, 0) + v
+    # Persist the iteration's structural action summary — admission
+    # denominators and support paths must survive into artifacts, not just
+    # the next controller prompt.
+    board.log(
+        "action_summary",
+        f"iter {board.iteration}: {summary.get('claims', 0)} claims added, "
+        f"{summary.get('claims_admitted', 0)} admitted of "
+        f"{summary.get('claims_offered', 0)} offered",
+        detail=dict(summary),
+    )
     return summary
 
 
@@ -88,7 +100,11 @@ def _read_jobs(action: dict, board: Board) -> list[tuple[str, dict]]:
     if source is None:
         return []
     text = source.text()
-    if not text:
+    if not _usable_source_text(text):  # whitespace-only = failed extraction
+        board.log("read_skipped",
+                  f"{source.id}: unusable source text (empty/whitespace)",
+                  detail={"source_id": source.id,
+                          "reason": "whitespace_only" if text else "empty"})
         return []
     source.read_status = "read"
     focus = str(action.get("focus", ""))
@@ -237,8 +253,12 @@ Rules:
         detail={"prior_claims": prior_result.get("claims", 0),
                 "new_claims": comp_result.get("claims", 0)},
     )
+    # Sum every numeric counter from both passes so admission denominators,
+    # support paths, span stats, and rejection reasons all persist.
     merged = dict(prior_result)
-    merged["claims"] = prior_result.get("claims", 0) + comp_result.get("claims", 0)
+    for k, v in comp_result.items():
+        if isinstance(v, (int, float)):
+            merged[k] = merged.get(k, 0) + v
     merged["completeness_added"] = comp_result.get("claims", 0)
     return merged
 
@@ -679,6 +699,98 @@ def _narrow_fallback_span(
 
 # --- shared ingestion ---
 
+# --- Deterministic source-evidence admission (cycle-4 treatment) ---
+# Pure string checks between a claim, its quoted evidence, and the cited
+# source slice. No model calls, no benchmark knowledge, no repair.
+
+_MATCH_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_DIGIT_RUN_RE = re.compile(r"\d+")
+_EVIDENCE_TOKEN_COVERAGE = 0.8  # fixed pre-smoke; never tuned against scores
+
+
+def _usable_source_text(text) -> bool:
+    """Whitespace-only extraction output is not a successful read input."""
+    return bool(text) and bool(text.strip())
+
+
+def _norm_match(s: str) -> str:
+    s = unicodedata.normalize("NFKC", s).casefold()
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return " ".join(s.split())
+
+
+def _nontrivial_tokens(s: str) -> list[str]:
+    return [t for t in _MATCH_TOKEN_RE.findall(_norm_match(s))
+            if len(t) >= 3 or any(ch.isdigit() for ch in t)]
+
+
+_SLICE_TOKEN_CAP = 2000  # bound matcher cost on oversized fallback slices
+
+
+def _lcs_len(a: list[str], b: list[str]) -> int:
+    """Longest common subsequence length — order-preserving match that
+    tolerates absent tokens anywhere, unlike a first-miss cursor."""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    for x in a:
+        cur = [0]
+        for j, y in enumerate(b, 1):
+            cur.append(prev[j - 1] + 1 if x == y else max(prev[j], cur[j - 1]))
+        prev = cur
+    return prev[-1]
+
+
+def _ordered_token_coverage(evidence: str, slice_text: str) -> float:
+    """Order-preserving coverage of the evidence's nontrivial tokens in the
+    cited slice, guarded by distinct-token coverage so common structural
+    tokens alone can never satisfy the threshold. Tolerates layout/OCR
+    spacing, not invented prose."""
+    ev = _nontrivial_tokens(evidence)
+    if not ev:
+        return 0.0
+    sl = [t for t in _MATCH_TOKEN_RE.findall(_norm_match(slice_text))
+          ][:_SLICE_TOKEN_CAP]
+    ordered = _lcs_len(ev, sl) / len(ev)
+    distinct_ev = set(ev)
+    distinct = len(distinct_ev & set(sl)) / len(distinct_ev)
+    return min(ordered, distinct)
+
+
+def _evidence_supported(evidence: str, slice_text: str,
+                        content: str = "") -> tuple[bool, str]:
+    """Returns (supported, path) with path 'exact' | 'ordered' | ''.
+
+    The ordered path carries an extra guard: every nontrivial token asserted
+    in BOTH the claim content and the evidence must occur in the cited slice.
+    The 80% tolerance absorbs peripheral quote/OCR noise, but an unmatched
+    token cannot carry the claim's substantive assertion (one decisive
+    noun/name/status differing from source while boilerplate matches)."""
+    ne, ns = _norm_match(evidence), _norm_match(slice_text)
+    if ne and ne in ns:
+        return True, "exact"
+    if _ordered_token_coverage(evidence, slice_text) < _EVIDENCE_TOKEN_COVERAGE:
+        return False, ""
+    if content:
+        shared = set(_nontrivial_tokens(content)) & set(_nontrivial_tokens(evidence))
+        slice_tokens = set(_MATCH_TOKEN_RE.findall(_norm_match(slice_text)))
+        if shared - slice_tokens:
+            return False, ""
+    return True, "ordered"
+
+
+def _digit_runs(s: str) -> set[str]:
+    return set(_DIGIT_RUN_RE.findall(unicodedata.normalize("NFKC", s)))
+
+
+def _digits_conserved(content: str, evidence: str, slice_text: str) -> bool:
+    """Every digit run asserted in content must occur in the evidence; every
+    digit run in the evidence must occur in the cited slice. No arithmetic
+    equivalence, unit conversion, or inference."""
+    return (_digit_runs(content) <= _digit_runs(evidence)
+            and _digit_runs(evidence) <= _digit_runs(slice_text))
+
+
 def _ingest_claims(parsed, board: Board, *, source: Source | None,
                    created_by: str, bind_to: list[str] | None = None,
                    valid_support: set[str] | None = None,
@@ -691,6 +803,13 @@ def _ingest_claims(parsed, board: Board, *, source: Source | None,
     span_hits = 0
     span_tfidf_hits = 0
     span_misses = 0
+    rejected = {"empty_evidence": 0, "unsupported_quote": 0,
+                "unsupported_digits": 0}
+    offered = 0        # well-formed source-backed claim items seen
+    admitted = 0       # passed the admission gate (before Board dedup)
+    support_exact = 0
+    support_ordered = 0
+    numeric_checked = 0
     for item in parsed.get("claims") or []:
         if not isinstance(item, dict):
             continue
@@ -711,23 +830,62 @@ def _ingest_claims(parsed, board: Board, *, source: Source | None,
         evidence_raw = str(item.get("evidence", "")).strip()
         stored_evidence = evidence_raw[:500]
         source_span = None
-        if source is not None and evidence_raw:
+        span_kind = ""
+        if source is not None:
+            # Deterministic evidence admission: a source-backed claim enters
+            # the board only when its evidence is supportable by the cited
+            # slice and its digits are conserved. No repair, no re-prompt.
+            offered += 1
+            if _digit_runs(content):
+                numeric_checked += 1
+            if not evidence_raw:
+                rejected["empty_evidence"] += 1
+                continue
             haystack = span_text if span_text is not None else source.text()
             source_span = _find_quote_span(haystack, evidence_raw, span_start)
             if source_span is not None:
-                span_hits += 1
+                span_kind = "exact"
             else:
-                if span_text is not None:
-                    source_span = _tfidf_span(span_text, evidence_raw, span_start)
+                # Every source-backed claim gets a bounded candidate slice —
+                # search-style ingestion (span_text=None) uses the full
+                # haystack for TF-IDF resolution, never an unbounded slice.
+                source_span = _tfidf_span(haystack, evidence_raw, span_start)
                 if source_span is not None:
-                    span_tfidf_hits += 1
+                    span_kind = "tfidf"
                 else:
-                    span_misses += 1
+                    span_kind = "miss"
                     if span_text is not None:
                         source_span = _narrow_fallback_span(
                             span_text, span_start,
                             str(item.get("section", "")),
                         )
+            if source_span is not None:
+                lo = max(0, source_span[0] - span_start)
+                hi = max(0, source_span[1] - span_start)
+                slice_text = haystack[lo:hi]
+            else:
+                slice_text = ""
+            supported, support_path = (
+                _evidence_supported(evidence_raw, slice_text, content)
+                if slice_text else (False, "")
+            )
+            if not supported:
+                rejected["unsupported_quote"] += 1
+                continue
+            if not _digits_conserved(content, evidence_raw, slice_text):
+                rejected["unsupported_digits"] += 1
+                continue
+            admitted += 1
+            if support_path == "exact":
+                support_exact += 1
+            else:
+                support_ordered += 1
+            if span_kind == "exact":
+                span_hits += 1
+            elif span_kind == "tfidf":
+                span_tfidf_hits += 1
+            else:
+                span_misses += 1
         claim = Claim(
             kind=kind, content=content,
             source_doc=source.name if source else None,
@@ -743,6 +901,14 @@ def _ingest_claims(parsed, board: Board, *, source: Source | None,
         if board.add_claim(claim):
             added += 1
             added_ids.append(claim.id)
+
+    # A response with any rejected source-backed claim loses its proposals:
+    # the schema cannot prove which claim grounds each proposal, so this is
+    # deterministic response bookkeeping, not a second semantic judgment.
+    any_rejected = sum(rejected.values()) > 0
+    if any_rejected:
+        parsed = {k: v for k, v in parsed.items()
+                  if k not in ("proposed_targets", "proposed_reads", "units")}
 
     proposed = 0
     for pt in parsed.get("proposed_targets") or []:
@@ -819,11 +985,27 @@ def _ingest_claims(parsed, board: Board, *, source: Source | None,
                     "span_tfidf_hits": span_tfidf_hits, "span_misses": span_misses},
         )
 
+    if any_rejected:
+        board.log(
+            "claim_rejected",
+            f"{created_by}: rejected {sum(rejected.values())} claims "
+            f"(evidence admission)",
+            detail={"by": created_by, **rejected},
+        )
+
     return {
         "claims": added, "targets_proposed": proposed, "units": units_added,
         "span_hits": span_hits, "span_tfidf_hits": span_tfidf_hits,
         "span_misses": span_misses,
         "proposed_reads": proposed_reads_count,
+        "claims_offered": offered,
+        "claims_admitted": admitted,
+        "support_exact": support_exact,
+        "support_ordered": support_ordered,
+        "numeric_claims_checked": numeric_checked,
+        "rejected_empty_evidence": rejected["empty_evidence"],
+        "rejected_unsupported_quote": rejected["unsupported_quote"],
+        "rejected_unsupported_digits": rejected["unsupported_digits"],
     }
 
 
@@ -956,7 +1138,14 @@ def bulk_extract_frontier(board: Board, worker_caller) -> dict:
              "claims_bound": 0, "span_exact": 0, "span_fuzzy": 0,
              "span_fallback": 0, "sources_read": 0,
              "sources_with_accepted_claims": 0, "waves": 0,
-             "max_parallelism": 0, "failed_call_reserved_tokens": 0}
+             "max_parallelism": 0, "failed_call_reserved_tokens": 0,
+             "claims_rejected_empty_evidence": 0,
+             "claims_rejected_unsupported_quote": 0,
+             "claims_rejected_unsupported_digits": 0,
+             "claims_offered": 0, "claims_admitted": 0,
+             "support_exact": 0, "support_ordered": 0,
+             "numeric_claims_checked": 0,
+             "integrity_failed_extractions": 0}
 
     import time as _time
     t0 = _time.time()  # includes preflight materialization time
@@ -967,13 +1156,19 @@ def bulk_extract_frontier(board: Board, worker_caller) -> dict:
     input_bounds: dict[str, int] = {}
     estimates: dict[str, int] = {}
     render_failures = 0
+    render_exceptions = 0
+    render_whitespace_only = 0
     for sid in candidates:
         src = board.find_source(sid)
         try:
             text = src.text()
         except Exception:
-            text = ""
-        if not text:  # exception or empty materialization — both unrenderable
+            text = None
+        if not _usable_source_text(text):
+            if text is None:
+                render_exceptions += 1
+            elif text.strip() == "" and text != "":
+                render_whitespace_only += 1
             texts[sid] = ""
             input_bounds[sid] = 0
             estimates[sid] = 0
@@ -1009,6 +1204,8 @@ def bulk_extract_frontier(board: Board, worker_caller) -> dict:
             "full_set_estimated_fit": (render_failures == 0
                                        and full_set_estimate <= envelope),
             "render_failures": render_failures,
+            "render_exceptions": render_exceptions,
+            "render_whitespace_only": render_whitespace_only,
             "envelope_tokens": envelope,
         },
     )
@@ -1100,6 +1297,16 @@ def bulk_extract_frontier(board: Board, worker_caller) -> dict:
             stats["span_exact"] += out.get("span_hits", 0)
             stats["span_fuzzy"] += out.get("span_tfidf_hits", 0)
             stats["span_fallback"] += out.get("span_misses", 0)
+            for key in ("empty_evidence", "unsupported_quote",
+                        "unsupported_digits"):
+                stats[f"claims_rejected_{key}"] += out.get(f"rejected_{key}", 0)
+            for key in ("claims_offered", "claims_admitted", "support_exact",
+                        "support_ordered", "numeric_claims_checked"):
+                stats[key] += out.get(key, 0)
+            if out.get("claims_offered", 0) and not out.get("claims_admitted", 0):
+                # Every offered claim in a nonempty response failed the gate
+                # (gate-admitted, not Board-added — dedup does not mislabel).
+                stats["integrity_failed_extractions"] += 1
             src.read_status = "read"
             stats["sources_read"] += 1
         idx += len(wave)

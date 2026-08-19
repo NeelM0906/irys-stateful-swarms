@@ -40,7 +40,7 @@ class _FakeCaller:
         payload = self.payload(prompt) if callable(self.payload) else self.payload
         if payload is None:
             payload = {"claims": [{"kind": "observation",
-                                   "content": "fact from " + prompt.split("DOCUMENT: ")[-1].split("\n")[0],
+                                   "content": "the document states a quoted fact",
                                    "section": "s1",
                                    "evidence": "quoted fact text",
                                    "confidence": 0.9}]}
