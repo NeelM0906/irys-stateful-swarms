@@ -52,3 +52,7 @@ codex_*.md
 
 # Internal operational docs — Codex-readable, never pushed (opsec)
 docs/internal/
+
+# Experiment logs are internal-only
+experiments/EXPERIMENTS.md
+experiments/ledger.jsonl
