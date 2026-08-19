@@ -49,3 +49,6 @@ codex_*.md
 .env
 .env.local
 .env.anthropic
+
+# Internal operational docs — Codex-readable, never pushed (opsec)
+docs/internal/
