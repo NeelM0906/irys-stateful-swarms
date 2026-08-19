@@ -12,7 +12,26 @@ from pathlib import Path
 from .runner import RunResult, run_single_task
 
 
+def _load_dotenv() -> None:
+    """Load KEY=VALUE lines from a repo-root .env into os.environ.
+
+    Real environment variables always win; .env only fills in unset keys.
+    """
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def main():
+    _load_dotenv()
     parser = argparse.ArgumentParser(
         description="irys — stateful swarm document analysis",
         prog="irys",
@@ -78,7 +97,7 @@ def main():
     score_p.add_argument("--scorer", default=None,
                          help="Force scorer type: harvey, llm_judge, file_check, "
                               "or agent_bench:<name> (default: auto)")
-    score_p.add_argument("--judge-model", default="gemini-3.1-flash-lite")
+    score_p.add_argument("--judge-model", default=os.environ.get("SWARM_JUDGE_MODEL", "gemini-3.1-flash-lite"))
     score_p.add_argument("--concurrency", "-j", type=int, default=20,
                          help="Criteria parallelism per task")
     score_p.add_argument("--task-concurrency", type=int, default=5,
@@ -93,7 +112,7 @@ def main():
         "funnel", help="Funnel-analyze failed criteria of a loop batch",
     )
     funnel_p.add_argument("results_dir", type=Path, help="Results directory")
-    funnel_p.add_argument("--judge-model", default="gemini-3.1-flash-lite")
+    funnel_p.add_argument("--judge-model", default=os.environ.get("SWARM_JUDGE_MODEL", "gemini-3.1-flash-lite"))
 
     # Summarize derived-work sidecars
     derived_p = sub.add_parser(

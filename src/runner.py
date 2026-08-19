@@ -72,7 +72,9 @@ def run_single_task(task_dir: Path, output_dir: Path, *,
     if not instruction:
         return RunResult(task_id=task_id, error="no instruction found")
 
-    documents = discover_documents(task_dir, task_data.get("docs_path"))
+    documents = discover_documents(
+        task_dir, task_data.get("docs_path") or task_data.get("docs_dir")
+    )
     if not documents:
         return RunResult(task_id=task_id, error="no documents found")
 
@@ -143,8 +145,11 @@ def run_single_task(task_dir: Path, output_dir: Path, *,
     # Cost calculation per model
     MODEL_PRICING = {
         "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
+        "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
         "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
         "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
+        "gemini-3.6-flash": {"input": 1.50, "output": 7.50},
+        "gemini-3.7-flash": {"input": 0.75, "output": 3.75},
         "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00},
         "claude-fable-5": {"input": 10.00, "output": 50.00},
         "claude-opus-4-8": {"input": 5.00, "output": 25.00},
