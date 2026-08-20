@@ -79,7 +79,7 @@ class TestVerificationLedger:
 
     def test_clean_record(self):
         ledger = syn.VerificationLedger()
-        ledger.record({"status": "clean"})
+        ledger.record({"status": "clean", "activation_eligible": True})
         s = ledger.summary()
         assert s["chunks_verified"] == 1
         assert s["chunks_clean"] == 1
@@ -88,7 +88,7 @@ class TestVerificationLedger:
     def test_corrected_record(self):
         ledger = syn.VerificationLedger()
         ledger.record({"status": "corrected", "edits_applied": 3,
-                       "errors_caught": 2})
+                       "errors_caught": 2, "activation_eligible": True})
         s = ledger.summary()
         assert s["chunks_corrected"] == 1
         assert s["edits_applied"] == 3
@@ -110,19 +110,28 @@ class TestVerificationLedger:
         assert s["chunks_failed"] == 1
         assert s["invalid_re_audits"] == 1
 
+    def test_skipped_record(self):
+        ledger = syn.VerificationLedger()
+        ledger.record({"status": "skipped"})
+        s = ledger.summary()
+        assert s["chunks_verified"] == 0
+        assert s["chunks_skipped"] == 1
+
     def test_multiple_records(self):
         ledger = syn.VerificationLedger()
-        ledger.record({"status": "clean"})
+        ledger.record({"status": "clean", "activation_eligible": True})
         ledger.record({"status": "corrected", "edits_applied": 1,
-                       "errors_caught": 1})
+                       "errors_caught": 1, "activation_eligible": True})
         ledger.record({"status": "failed", "reason": "audit_error:timeout"})
+        ledger.record({"status": "skipped"})
         s = ledger.summary()
         assert s["chunks_verified"] == 3
+        assert s["chunks_skipped"] == 1
         assert s["chunks_clean"] == 1
         assert s["chunks_corrected"] == 1
         assert s["chunks_failed"] == 1
         assert s["activation_eligible"] == 2
-        assert len(ledger.entries) == 3
+        assert len(ledger.entries) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +289,68 @@ class TestValidateVerificationAudit:
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
         assert "missing_finding_id" in err
 
+    def test_ambiguous_match_rejected(self):
+        draft = "The $5 million and $5 million revenue."
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, draft)
+        assert "ambiguous_match" in err
+
+    def test_duplicate_finding_id_rejected(self):
+        raw = {"findings": [
+            {"finding_id": "f1", "defect_type": "factual_error",
+             "scope_id": "target:t1", "operation": "replace",
+             "match": "$5 million", "replacement": "$6 million"},
+            {"finding_id": "f1", "defect_type": "numerical_error",
+             "scope_id": "target:t1", "operation": "delete",
+             "match": " in revenue"},
+        ]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "duplicate_finding_id" in err
+
+    def test_insert_after_needs_replacement(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "insert_after",
+                             "match": "$5 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "empty_replacement" in err
+
+    def test_non_string_finding_id_rejected(self):
+        raw = {"findings": [{"finding_id": 1,
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "missing_finding_id" in err
+
+    def test_non_string_defect_type_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": 42,
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "unknown_defect" in err
+
+    def test_non_string_match_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": 123,
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "empty_match" in err
+
 
 # ---------------------------------------------------------------------------
 # _apply_verification_edits
@@ -347,6 +418,18 @@ class TestApplyVerificationEdits:
                      "match": "Only this."}]
         _, err = syn._apply_verification_edits(draft, findings)
         assert err == "empty_result"
+
+    def test_colocated_inserts_rejected(self):
+        draft = "Revenue was $5M in 2025."
+        findings = [
+            {"finding_id": "f1", "operation": "insert_after",
+             "match": "$5M", "replacement": " (audited)"},
+            {"finding_id": "f2", "operation": "insert_after",
+             "match": "$5M", "replacement": " (estimated)"},
+        ]
+        _, err = syn._apply_verification_edits(draft, findings)
+        assert err is not None
+        assert "colocated_inserts" in err or "overlap" in err
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +639,86 @@ class TestShadowVerifyChunk:
             chunk_index=0, ledger=ledger)
         assert result["tokens_in"] == 100
         assert result["tokens_out"] == 50
+
+    def test_sidecar_has_location_fields(self, monkeypatch):
+        self._patch_call_json(monkeypatch, [{"findings": []}])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Draft text.",
+            chunk=chunk, filename="memo.docx", section_title="Analysis",
+            chunk_index=2, ledger=ledger)
+        assert result["filename"] == "memo.docx"
+        assert result["section_title"] == "Analysis"
+        assert result["chunk_index"] == 2
+        assert "target:t1" in result["scope_ids"]
+
+    def test_skipped_has_location_fields(self, monkeypatch):
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="   ",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=3, ledger=ledger)
+        assert result["filename"] == "out.docx"
+        assert result["chunk_index"] == 3
+
+    def test_requirement_scoped_finding_not_blocking(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "requirement:r1", "impact": "blocking",
+            "operation": "replace", "match": "$5M",
+            "replacement": "$6M",
+        }]}
+        self._patch_call_json(monkeypatch, [audit])
+        ledger = syn.VerificationLedger()
+        chunk = (_make_chunk_items("t1", ["c1"])
+                 + _make_requirement_items(["r1"]))
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "clean"
+
+    def test_edit_failure_has_control_fallback(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "impact": "blocking",
+            "operation": "replace",
+            "match": "$5M",
+            "replacement": "$6M",
+        }, {
+            "finding_id": "f2", "defect_type": "factual_error",
+            "scope_id": "target:t1", "impact": "blocking",
+            "operation": "replace",
+            "match": "$5M in",
+            "replacement": "$7M in",
+        }]}
+        self._patch_call_json(monkeypatch, [audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M in 2025.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["control_fallback"] is True
+
+    def test_impact_blocking_alone_not_sufficient(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "imprecise_language",
+            "scope_id": "target:t1", "impact": "blocking",
+            "operation": "replace", "match": "earned",
+            "replacement": "reportedly earned",
+        }]}
+        self._patch_call_json(monkeypatch, [audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="The company earned $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "clean"
 
 
 # ---------------------------------------------------------------------------

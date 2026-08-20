@@ -627,11 +627,21 @@ Write ONLY this section's content (no document title, no other sections, no meta
             manifest["repair"] = "discarded"
 
     if _VERIFICATION_SHADOW and verification_ledger is not None and text.strip():
-        shadow = _shadow_verify_chunk(
-            caller, board, draft=text, chunk=chunk,
-            filename=filename, section_title=section["title"],
-            chunk_index=chunk_index, ledger=verification_ledger,
-        )
+        try:
+            shadow = _shadow_verify_chunk(
+                caller, board, draft=text, chunk=chunk,
+                filename=filename, section_title=section["title"],
+                chunk_index=chunk_index, ledger=verification_ledger,
+            )
+        except Exception:
+            shadow = {"status": "failed",
+                      "reason": "exception_containment",
+                      "control_hash": hashlib.sha256(
+                          text.encode("utf-8")).hexdigest(),
+                      "filename": filename,
+                      "section_title": section["title"],
+                      "chunk_index": chunk_index}
+            verification_ledger.record(shadow)
         manifest["verification_shadow"] = shadow
 
     manifest["tokens_in"] = board.tokens_input - tin0
@@ -971,6 +981,7 @@ class VerificationBlockedError(RuntimeError):
 class VerificationLedger:
     def __init__(self):
         self.chunks_verified = 0
+        self.chunks_skipped = 0
         self.chunks_clean = 0
         self.chunks_corrected = 0
         self.chunks_failed = 0
@@ -982,28 +993,32 @@ class VerificationLedger:
         self.entries: list[dict] = []
 
     def record(self, entry: dict) -> None:
-        self.chunks_verified += 1
         status = entry.get("status", "failed")
-        if status == "clean":
-            self.chunks_clean += 1
-            self.activation_eligible += 1
-        elif status == "corrected":
-            self.chunks_corrected += 1
-            self.edits_applied += entry.get("edits_applied", 0)
-            self.errors_caught += entry.get("errors_caught", 0)
-            self.activation_eligible += 1
+        if status == "skipped":
+            self.chunks_skipped += 1
         else:
-            self.chunks_failed += 1
-            reason = entry.get("reason", "")
-            if "invalid_audit" in reason:
-                self.invalid_audits += 1
-            if "invalid_re_audit" in reason:
-                self.invalid_re_audits += 1
+            self.chunks_verified += 1
+            if status == "clean":
+                self.chunks_clean += 1
+            elif status == "corrected":
+                self.chunks_corrected += 1
+            else:
+                self.chunks_failed += 1
+                reason = entry.get("reason", "")
+                if "invalid_audit" in reason:
+                    self.invalid_audits += 1
+                if "invalid_re_audit" in reason:
+                    self.invalid_re_audits += 1
+        self.edits_applied += entry.get("edits_applied", 0)
+        self.errors_caught += entry.get("errors_caught", 0)
+        if entry.get("activation_eligible"):
+            self.activation_eligible += 1
         self.entries.append(entry)
 
     def summary(self) -> dict:
         return {
             "chunks_verified": self.chunks_verified,
+            "chunks_skipped": self.chunks_skipped,
             "chunks_clean": self.chunks_clean,
             "chunks_corrected": self.chunks_corrected,
             "chunks_failed": self.chunks_failed,
@@ -1073,25 +1088,37 @@ def _validate_verification_audit(raw, valid_scopes: set[str],
     findings = raw.get("findings")
     if not isinstance(findings, list):
         return None, "findings_not_list"
+    seen_fids: set[str] = set()
     for f in findings:
         if not isinstance(f, dict):
             return None, "finding_not_dict"
-        if not f.get("finding_id"):
+        fid = f.get("finding_id")
+        if not isinstance(fid, str) or not fid:
             return None, "missing_finding_id"
-        if f.get("defect_type", "") not in _KNOWN_DEFECTS:
-            return None, f"unknown_defect:{f.get('defect_type', '')}"
-        if f.get("scope_id", "") not in valid_scopes:
-            return None, f"invalid_scope:{f.get('scope_id', '')}"
-        op = f.get("operation", "")
-        if op not in ("replace", "delete", "insert_after"):
+        if fid in seen_fids:
+            return None, f"duplicate_finding_id:{fid}"
+        seen_fids.add(fid)
+        dt = f.get("defect_type")
+        if not isinstance(dt, str) or dt not in _KNOWN_DEFECTS:
+            return None, f"unknown_defect:{dt}"
+        sid = f.get("scope_id")
+        if not isinstance(sid, str) or sid not in valid_scopes:
+            return None, f"invalid_scope:{sid}"
+        op = f.get("operation")
+        if not isinstance(op, str) or op not in ("replace", "delete",
+                                                  "insert_after"):
             return None, f"invalid_op:{op}"
-        match = f.get("match", "")
-        if not match:
-            return None, f"empty_match:{f['finding_id']}"
+        match = f.get("match")
+        if not isinstance(match, str) or not match:
+            return None, f"empty_match:{fid}"
         if match not in draft:
-            return None, f"match_not_found:{f['finding_id']}:{match[:60]}"
-        if op == "replace" and not f.get("replacement"):
-            return None, f"empty_replacement:{f['finding_id']}"
+            return None, f"match_not_found:{fid}:{match[:60]}"
+        if draft.count(match) > 1:
+            return None, f"ambiguous_match:{fid}:{match[:60]}"
+        if op in ("replace", "insert_after"):
+            repl = f.get("replacement")
+            if not isinstance(repl, str) or not repl:
+                return None, f"empty_replacement:{fid}"
     return findings, None
 
 
@@ -1116,8 +1143,12 @@ def _apply_verification_edits(draft: str, findings: list[dict]
             intervals.append((end, end, replacement, f["finding_id"]))
     intervals.sort(key=lambda x: x[0])
     for i in range(1, len(intervals)):
-        if intervals[i][0] < intervals[i - 1][1]:
-            return None, f"overlap:{intervals[i - 1][3]}/{intervals[i][3]}"
+        prev_start, prev_end, _, prev_fid = intervals[i - 1]
+        cur_start, cur_end, _, cur_fid = intervals[i]
+        if cur_start < prev_end:
+            return None, f"overlap:{prev_fid}/{cur_fid}"
+        if cur_start == prev_end and prev_start == prev_end and cur_start == cur_end:
+            return None, f"colocated_inserts:{prev_fid}/{cur_fid}"
     parts: list[str] = []
     cursor = 0
     for start, end, repl, _ in intervals:
@@ -1141,12 +1172,13 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
     if not scopes or not draft.strip():
         entry = {"status": "skipped",
                  "reason": "no_scopes" if not scopes else "empty_draft",
-                 "control_hash": control_hash}
+                 "control_hash": control_hash,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index}
         ledger.record(entry)
         return entry
 
-    items_text = _CHUNK_SEP.join(
-        it["serialized"] for it in chunk if it.get("type") != "requirement")
+    items_text = _CHUNK_SEP.join(it["serialized"] for it in chunk)
     prompt = _build_audit_prompt(draft, scopes, items_text)
     scope_set = set(scopes.keys())
 
@@ -1160,6 +1192,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"audit_error:{str(exc)[:100]}",
                  "control_hash": control_hash,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1171,6 +1206,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"invalid_audit:{err}",
                  "control_hash": control_hash,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1179,11 +1217,14 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
 
     blocking = [f for f in findings
                 if f.get("defect_type") in _BLOCKING_DEFECTS
-                or f.get("impact") == "blocking"]
+                and not f.get("scope_id", "").startswith("requirement:")]
     if not blocking:
         entry = {"status": "clean", "control_hash": control_hash,
                  "advisory_count": len(findings),
                  "activation_eligible": True,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1195,7 +1236,11 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"edit_failure:{edit_err}",
                  "control_hash": control_hash,
+                 "control_fallback": True,
                  "blocking_count": len(blocking),
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1214,8 +1259,12 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"re_audit_error:{str(exc)[:100]}",
                  "control_hash": control_hash,
+                 "control_fallback": True,
                  "candidate_hash": candidate_hash,
                  "edits_applied": len(blocking),
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1228,8 +1277,12 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"invalid_re_audit:{re_err}",
                  "control_hash": control_hash,
+                 "control_fallback": True,
                  "candidate_hash": candidate_hash,
                  "edits_applied": len(blocking),
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1238,16 +1291,20 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
 
     re_blocking = [f for f in re_findings
                    if f.get("defect_type") in _BLOCKING_DEFECTS
-                   or f.get("impact") == "blocking"]
+                   and not f.get("scope_id", "").startswith("requirement:")]
     if re_blocking:
         entry = {"status": "failed",
                  "reason": "residual_blockers",
                  "control_hash": control_hash,
+                 "control_fallback": True,
                  "candidate_hash": candidate_hash,
                  "candidate_text": candidate,
                  "edits_applied": len(blocking),
                  "residual_count": len(re_blocking),
                  "activation_eligible": False,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
                  "tokens_in": board.tokens_input - tin0,
                  "tokens_out": board.tokens_output - tout0,
                  "elapsed_s": round(time.monotonic() - t0, 2)}
@@ -1260,6 +1317,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
              "edits_applied": len(blocking),
              "errors_caught": len(blocking),
              "activation_eligible": True,
+             "filename": filename, "section_title": section_title,
+             "chunk_index": chunk_index,
+             "scope_ids": list(scopes.keys()),
              "tokens_in": board.tokens_input - tin0,
              "tokens_out": board.tokens_output - tout0,
              "elapsed_s": round(time.monotonic() - t0, 2)}
