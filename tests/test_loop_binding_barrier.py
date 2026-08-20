@@ -164,3 +164,16 @@ def test_none_response_counted_as_invalid():
 
     assert result["invalid"] == 1
     assert result["bound"] == 0
+
+
+def test_empty_llm_response_counted_as_invalid_e2e():
+    """End-to-end: LLM returns {} (no bindings key) through real _run_bind_batch."""
+    board = _board_with_claims_and_targets(n_claims=2, bound=False)
+
+    with patch("src.loop.actions.call_json") as mock_json:
+        mock_json.return_value = {}
+        result = auto_bind(board, MagicMock())
+
+    assert result["invalid"] == 1
+    assert result["bound"] == 0
+    assert result["calls"] == 1

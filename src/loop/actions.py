@@ -401,7 +401,7 @@ Return JSON:
 Include every claim id. Bind on substance, not keyword overlap."""
 
     parsed = call_json(caller, board, prompt, kind="bind", max_tokens=16384)
-    if not isinstance(parsed, dict):
+    if not isinstance(parsed, dict) or "bindings" not in parsed:
         return {}
     bound = 0
     for b in parsed.get("bindings", []):
