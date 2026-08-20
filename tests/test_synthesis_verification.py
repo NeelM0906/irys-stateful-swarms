@@ -244,6 +244,17 @@ def test_validate_correction_delete_no_replacement():
     ]}
     assert _validate_correction(corr, {"f1"}) is True
 
+def test_validate_correction_rejects_empty_edits():
+    corr = {"edits": []}
+    assert _validate_correction(corr, {"f1"}) is False
+
+def test_validate_correction_rejects_non_string_finding_id():
+    corr = {"edits": [
+        {"finding_id": ["f1"], "operation": "replace",
+         "span": "wrong", "replacement": "right"},
+    ]}
+    assert _validate_correction(corr, {"f1"}) is False
+
 def test_validate_correction_rejects_non_string_span():
     corr = {"edits": [
         {"finding_id": "f1", "operation": "replace",

@@ -823,14 +823,15 @@ def _validate_correction(correction: dict, blocking_ids: set[str]) -> bool:
     if not isinstance(correction, dict):
         return False
     edits = correction.get("edits")
-    if not isinstance(edits, list):
+    if not isinstance(edits, list) or not edits:
         return False
     for e in edits:
         if not isinstance(e, dict):
             return False
         if e.get("operation") not in ("replace", "insert_after", "delete"):
             return False
-        if e.get("finding_id") not in blocking_ids:
+        fid = e.get("finding_id")
+        if not isinstance(fid, str) or fid not in blocking_ids:
             return False
         span = e.get("span", "")
         if not isinstance(span, str):
@@ -1051,7 +1052,6 @@ Report any remaining defects using the same format. If all blocking defects are 
     reaudit_out = board.tokens_output - tout0
     ledger.charge(reaudit_in, reaudit_out)
     record["reaudit_tokens"] = {"input": reaudit_in, "output": reaudit_out}
-    record["final_findings"] = reaudit.get("findings", [])
 
     if not _validate_audit(reaudit, claim_ids):
         record["status"] = "reaudit_invalid"
@@ -1059,6 +1059,7 @@ Report any remaining defects using the same format. If all blocking defects are 
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
+    record["final_findings"] = reaudit.get("findings", [])
     reaudit_blockers = _blocking_findings(reaudit)
     record["reaudit_blockers"] = len(reaudit_blockers)
 

@@ -292,11 +292,9 @@ def test_requirements_visible_in_every_section_call():
 # --- 11. scoped repair -------------------------------------------------------------------
 
 def test_repair_scoped_to_single_section(monkeypatch):
-    monkeypatch.setenv("LOOP_SYNTHESIS_REPAIR", "1")
-    monkeypatch.setenv("LOOP_SYNTHESIS_VERIFY", "0")
-    import importlib
     import src.loop.synthesis as syn
-    importlib.reload(syn)
+    monkeypatch.setattr(syn, "_REPAIR_ENABLED", True)
+    monkeypatch.setattr(syn, "_VERIFICATION_ENABLED", False)
     board = _make_board()
     caller = _EchoCaller()
     syn.synthesize(caller, board, _plan())
@@ -304,7 +302,6 @@ def test_repair_scoped_to_single_section(monkeypatch):
     assert repair_prompts
     for p in repair_prompts:
         assert not ("c100" in p and "c200" in p)  # never both sections
-    importlib.reload(syn)
 
 
 # --- 12. deterministic assembly -------------------------------------------------------------
@@ -337,22 +334,17 @@ def test_assembly_appends_deterministic_limitations():
 # --- reviewer round-1 gap tests -----------------------------------------------------------
 
 def test_repair_receives_complete_untruncated_payload(monkeypatch):
-    monkeypatch.setenv("LOOP_SYNTHESIS_REPAIR", "1")
-    monkeypatch.setenv("LOOP_SYNTHESIS_VERIFY", "0")
-    import importlib
     import src.loop.synthesis as syn
-    importlib.reload(syn)
+    monkeypatch.setattr(syn, "_REPAIR_ENABLED", True)
+    monkeypatch.setattr(syn, "_VERIFICATION_ENABLED", False)
     board = _make_board(n_claims_t0=5, n_claims_t1=0)
     caller = _EchoCaller()
     syn.synthesize(caller, board, _plan(two_sections=False))
     repair_prompts = [p for p in caller.prompts if "coverage editor" in p]
     assert repair_prompts
-    # the LAST claim item (tail object) must be present whole in the repair
     for p in repair_prompts:
-        assert '"c104"' in p  # tail claim id survives, no prefix slicing
-        # every payload object in the repair prompt round-trips
+        assert '"c104"' in p
         assert "never truncated" in p
-    importlib.reload(syn)
 
 
 def test_intra_target_split_when_claims_exceed_cap():
@@ -561,10 +553,8 @@ def test_unit_call_resolves_context_claims_across_chunk_boundary():
 
 
 def test_hydration_covers_requirement_and_context_only_chunks(monkeypatch):
-    monkeypatch.setenv("LOOP_SYNTHESIS_HYDRATE", "1")
-    import importlib
     import src.loop.synthesis as syn
-    importlib.reload(syn)
+    monkeypatch.setattr(syn, "_SYNTHESIS_HYDRATE", True)
     board = _make_board(n_claims_t0=0, n_claims_t1=0)
     rc = Claim(id="c700", content="governing rule text",
                kind="requirement", source_doc="doc-0", confidence=0.9)
@@ -573,8 +563,7 @@ def test_hydration_covers_requirement_and_context_only_chunks(monkeypatch):
     caller = _EchoCaller()
     syn.synthesize(caller, board, plan)
     hyd = [e for e in board.events if e.kind == "synthesis_hydrate"]
-    assert hyd  # hydration ran for the requirement+unit chunk
-    importlib.reload(syn)
+    assert hyd
 
 
 def test_capacity_failure_persists_failure_manifest(tmp_path, monkeypatch):
