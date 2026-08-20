@@ -235,7 +235,7 @@ Every required file must appear. Every mandatory set-valued obligation must appe
 
 
 _SECTION_CHUNK_CAP = 400_000  # existing packet ceiling, now per-call, fixed pre-smoke
-_MAX_ITEMS_PER_CHUNK = int(os.getenv("LOOP_SYNTHESIS_MAX_ITEMS_PER_CHUNK", "150"))
+_MAX_ITEMS_PER_CHUNK = int(os.getenv("LOOP_SYNTHESIS_MAX_ITEMS_PER_CHUNK", "300"))
 
 
 def _norm_section_key(name: str) -> str:
