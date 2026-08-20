@@ -929,3 +929,46 @@ class TestDumpVerificationShadow:
         board.output_dir = None
         ledger = syn.VerificationLedger()
         syn._dump_verification_shadow(board, ledger)
+
+
+class TestDumpCandidate:
+    def test_writes_candidate_md_and_manifest(self, tmp_path):
+        board = FakeBoard()
+        board.output_dir = str(tmp_path)
+        candidate_text = "## Section A\n\nCorrected content here."
+        syn._dump_candidate(board, "memo.docx", candidate_text,
+                            has_corrections=True)
+        md_path = tmp_path / "loop" / "candidate_memo.docx.md"
+        assert md_path.exists()
+        assert md_path.read_text(encoding="utf-8") == candidate_text
+        manifest_path = tmp_path / "loop" / "candidate_manifest.json"
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert "memo.docx" in manifest
+        assert manifest["memo.docx"]["has_corrections"] is True
+        assert manifest["memo.docx"]["chars"] == len(candidate_text)
+        assert len(manifest["memo.docx"]["candidate_hash"]) == 64
+
+    def test_no_corrections_still_written(self, tmp_path):
+        board = FakeBoard()
+        board.output_dir = str(tmp_path)
+        syn._dump_candidate(board, "out.docx", "Same text",
+                            has_corrections=False)
+        manifest = json.loads(
+            (tmp_path / "loop" / "candidate_manifest.json").read_text())
+        assert manifest["out.docx"]["has_corrections"] is False
+
+    def test_multiple_files_append_manifest(self, tmp_path):
+        board = FakeBoard()
+        board.output_dir = str(tmp_path)
+        syn._dump_candidate(board, "a.docx", "TextA", has_corrections=True)
+        syn._dump_candidate(board, "b.docx", "TextB", has_corrections=False)
+        manifest = json.loads(
+            (tmp_path / "loop" / "candidate_manifest.json").read_text())
+        assert "a.docx" in manifest
+        assert "b.docx" in manifest
+
+    def test_no_output_dir_noop(self):
+        board = FakeBoard()
+        board.output_dir = None
+        syn._dump_candidate(board, "x.docx", "text", has_corrections=True)

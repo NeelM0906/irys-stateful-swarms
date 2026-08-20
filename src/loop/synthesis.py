@@ -798,6 +798,7 @@ def synthesize(smart_caller, board: Board, plan: dict,
         sections = _eligible_section_items(board, file_plan)
         file_manifest: dict = {"filename": filename, "sections": []}
         section_outputs: list[tuple[str, list[str]]] = []
+        candidate_section_outputs: list[tuple[str, list[str]]] = []
         total_calls = 0
 
         def _persist_artifacts() -> None:
@@ -847,14 +848,13 @@ def synthesize(smart_caller, board: Board, plan: dict,
                 }
                 raise
             texts: list[str] = []
+            candidate_texts: list[str] = []
             for i, chunk in enumerate(chunks):
                 if not chunk:
                     sec_manifest["chunks"].append(
                         {"chunk_index": 0, "chunk_count": 1, "items": 0,
                          "requirement_ids": section_req_ids,
                          "result": "empty_section"})
-                    # A section with no eligible items is a structural
-                    # failure surfaced explicitly, never a silent omission.
                     board.log(
                         "assembly_failure",
                         f"{filename} / {section['title']}: no eligible items",
@@ -875,6 +875,11 @@ def synthesize(smart_caller, board: Board, plan: dict,
                     verification_ledger=verification_ledger,
                 )
                 texts.append(text)
+                shadow = m.get("verification_shadow")
+                if shadow and shadow.get("status") == "corrected":
+                    candidate_texts.append(shadow["candidate_text"])
+                else:
+                    candidate_texts.append(text)
                 total_calls += 1
                 if m["result"] == "empty":
                     # An empty/failed section call is an explicit assembly
@@ -889,6 +894,8 @@ def synthesize(smart_caller, board: Board, plan: dict,
                                 "claim_ids": m["claim_ids"]},
                     )
             section_outputs.append((section["title"], texts))
+            candidate_section_outputs.append(
+                (section["title"], candidate_texts))
         finally:
             # Success or failure, persist exactly what happened: the assembly
             # manifest and the funnel-searchable record of every chunk that
@@ -939,6 +946,13 @@ def synthesize(smart_caller, board: Board, plan: dict,
                     ]},
         )
 
+        if _VERIFICATION_SHADOW and candidate_section_outputs:
+            candidate_final = _assemble_sections(
+                filename, candidate_section_outputs, residual_note)
+            has_corrections = (candidate_final != final)
+            _dump_candidate(board, filename, candidate_final,
+                            has_corrections)
+
     if verification_ledger is not None:
         _dump_verification_shadow(board, verification_ledger)
         board.log("verification_shadow",
@@ -960,6 +974,33 @@ def _dump_assembly(board: Board, filename: str, manifest: dict) -> None:
         (d / f"assembly_{safe}.json").write_text(
             json.dumps(manifest, indent=1, default=str), encoding="utf-8",
         )
+    except OSError:
+        pass
+
+
+def _dump_candidate(board: Board, filename: str, candidate_text: str,
+                    has_corrections: bool) -> None:
+    """Persist candidate assembly markdown for paired qualification scoring."""
+    if not board.output_dir:
+        return
+    try:
+        d = Path(board.output_dir) / "loop"
+        d.mkdir(parents=True, exist_ok=True)
+        safe = filename.replace("/", "_").replace("\\", "_")
+        (d / f"candidate_{safe}.md").write_text(
+            candidate_text, encoding="utf-8")
+        meta_path = d / "candidate_manifest.json"
+        manifest: dict = {}
+        if meta_path.exists():
+            manifest = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+        manifest[filename] = {
+            "has_corrections": has_corrections,
+            "candidate_hash": hashlib.sha256(
+                candidate_text.encode("utf-8")).hexdigest(),
+            "chars": len(candidate_text),
+        }
+        meta_path.write_text(
+            json.dumps(manifest, indent=1), encoding="utf-8")
     except OSError:
         pass
 
