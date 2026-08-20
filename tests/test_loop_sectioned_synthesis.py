@@ -681,3 +681,31 @@ def test_required_file_guards_still_apply():
                                      "guidance": "deep"}]}]}
     out = synthesize(_EchoCaller(), board, plan)
     assert list(out.keys()) == ["memo.docx"]  # fuzzy rename preserved
+
+
+# --- shadow verification integration -----------------------------------------------
+
+def test_shadow_verification_runs_when_enabled(monkeypatch, tmp_path):
+    import src.loop.synthesis as syn
+    monkeypatch.setattr(syn, "_VERIFICATION_SHADOW", True)
+    board = _make_board()
+    board.output_dir = str(tmp_path)
+    caller = _EchoCaller()
+    synthesize(caller, board, _plan())
+    shadow_path = tmp_path / "loop" / "verification_shadow.json"
+    assert shadow_path.exists()
+    data = json.loads(shadow_path.read_text(encoding="utf-8"))
+    assert data["summary"]["chunks_verified"] >= 1
+    assert all(e["status"] in ("clean", "corrected", "failed", "skipped")
+               for e in data["entries"])
+
+
+def test_shadow_verification_skipped_when_disabled(monkeypatch, tmp_path):
+    import src.loop.synthesis as syn
+    monkeypatch.setattr(syn, "_VERIFICATION_SHADOW", False)
+    board = _make_board()
+    board.output_dir = str(tmp_path)
+    caller = _EchoCaller()
+    synthesize(caller, board, _plan())
+    shadow_path = tmp_path / "loop" / "verification_shadow.json"
+    assert not shadow_path.exists()
