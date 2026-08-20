@@ -140,6 +140,25 @@ def test_validate_audit_rejects_overflow():
     assert err == "overflow"
 
 
+def test_validate_audit_rejects_out_of_scope_claim_id():
+    raw = {
+        "status": "complete", "overflow": False,
+        "findings": [{
+            "finding_id": "f1", "defect_type": "wrong_entity",
+            "impact": "blocking",
+            "draft_span": {"quote": "some text", "occurrence": 1},
+            "claim_ids": ["c999"],
+            "supported_correction": "fix",
+            "rationale": "test",
+        }]
+    }
+    audit, err = _validate_audit(raw, draft="some text here",
+                                 scope_sha256="x",
+                                 item_ids={"c1", "c2"})
+    assert audit is None
+    assert "out_of_scope_id" in err
+
+
 def test_validate_audit_rejects_span_not_in_draft():
     raw = {
         "status": "complete", "overflow": False,
