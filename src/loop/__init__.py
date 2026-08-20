@@ -173,11 +173,20 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
         forced = []
         _force_analysis_gate(board, forced)
         if forced:
+            derived_before_forced = sum(1 for c in board.claims if c.is_derived)
             extra = execute_actions(forced, board, worker_caller,
                                        smart_caller=smart)
+            derived_added_forced = (
+                sum(1 for c in board.claims if c.is_derived) - derived_before_forced
+            )
             board.log("force_analyze_exec",
                       f"executed {len(forced)} forced analyze actions",
                       detail=extra)
+            if derived_added_forced > 0 or extra.get("claims", 0) > 0:
+                bind_result = auto_bind(board, worker_caller,
+                                        budget_stop_pct=BUDGET_STOP_PCT)
+                board.log("force_analyze_bind", f"post-forced auto_bind",
+                          detail=bind_result)
 
         board.snapshot()
 
