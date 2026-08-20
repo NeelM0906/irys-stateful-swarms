@@ -1181,7 +1181,7 @@ def _apply_verification_edits(draft: str, findings: list[dict]
         elif op == "insert_after":
             end = idx + len(match_text)
             intervals.append((end, end, replacement, f["finding_id"]))
-    intervals.sort(key=lambda x: x[0])
+    intervals.sort(key=lambda x: (x[0], x[1]))
     for i in range(1, len(intervals)):
         prev_start, prev_end, _, prev_fid = intervals[i - 1]
         cur_start, cur_end, _, cur_fid = intervals[i]

@@ -520,6 +520,25 @@ class TestApplyVerificationEdits:
         assert err is not None
         assert "colocated_inserts" in err or "overlap" in err
 
+    def test_boundary_insert_and_replace_order_independent(self):
+        draft = "AB"
+        insert_first = [
+            {"finding_id": "f1", "operation": "insert_after",
+             "match": "A", "replacement": "Y"},
+            {"finding_id": "f2", "operation": "replace",
+             "match": "B", "replacement": "X"},
+        ]
+        replace_first = [
+            {"finding_id": "f2", "operation": "replace",
+             "match": "B", "replacement": "X"},
+            {"finding_id": "f1", "operation": "insert_after",
+             "match": "A", "replacement": "Y"},
+        ]
+        r1, e1 = syn._apply_verification_edits(draft, insert_first)
+        r2, e2 = syn._apply_verification_edits(draft, replace_first)
+        assert e1 is None and e2 is None
+        assert r1 == r2 == "AYX"
+
 
 # ---------------------------------------------------------------------------
 # _shadow_verify_chunk — unit tests with mocked model calls
