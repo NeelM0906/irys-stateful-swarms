@@ -68,14 +68,14 @@ def test_ledger_charge_tracks_spending():
     ledger = VerificationLedger()
     ledger.add_draft_tokens(10000, 2000)
     ledger.charge(500, 100)
-    assert ledger.spent == 600
+    assert ledger.spent == 100
     assert ledger.calls == 1
 
 def test_ledger_exhaustion():
     ledger = VerificationLedger()
     ledger.add_draft_tokens(1000, 0)
     budget = ledger.budget  # 150
-    ledger.charge(budget, 0)
+    ledger.charge(0, budget)
     assert ledger.can_reserve() is False
 
 def test_ledger_reserve_requires_minimum():
@@ -91,9 +91,9 @@ def test_ledger_reserve_sufficient():
     budget = ledger.budget  # 3000
     assert budget >= _VERIFY_CALL_RESERVE
     assert ledger.can_reserve() is True
-    ledger.charge(budget - _VERIFY_CALL_RESERVE, 0)
+    ledger.charge(0, budget - _VERIFY_CALL_RESERVE)
     assert ledger.can_reserve() is True
-    ledger.charge(1, 0)
+    ledger.charge(0, 1)
     assert ledger.can_reserve() is False
 
 def test_ledger_summary():
@@ -488,7 +488,7 @@ def test_ledger_shared_across_chunks():
 
     ledger.charge(100, 50)
     ledger.charge(100, 50)
-    assert ledger.spent == 300
+    assert ledger.spent == 100
     assert ledger.calls == 2
 
 

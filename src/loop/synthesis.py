@@ -39,8 +39,9 @@ class VerificationLedger:
 
     Created once at synthesize() entry; shared across every file/section/chunk.
     Budget = 15% of cumulative synthesis drafting tokens (input+output).
-    The budget grows as draft calls accumulate; verification calls are charged
-    against the running budget.
+    Only output tokens from verification calls are charged against the budget;
+    input tokens are tracked but not charged because they re-present content
+    that already consumed the draft budget.
     """
 
     def __init__(self) -> None:
@@ -63,7 +64,7 @@ class VerificationLedger:
         return self.budget - self.spent >= _VERIFY_CALL_RESERVE
 
     def charge(self, input_tokens: int, output_tokens: int) -> None:
-        self.spent += input_tokens + output_tokens
+        self.spent += output_tokens
         self.calls += 1
 
     def summary(self) -> dict:
