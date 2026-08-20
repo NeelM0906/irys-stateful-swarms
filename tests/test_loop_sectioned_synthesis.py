@@ -33,6 +33,10 @@ class _EchoCaller:
 
     def complete(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        if kwargs.get("json_mode"):
+            return _FakeResult(text='{"findings": []}',
+                               tokens_input=10, tokens_output=5,
+                               tokens_total=15)
         section = ""
         for line in prompt.splitlines():
             if line.startswith("SECTION: "):
@@ -99,7 +103,8 @@ def test_single_section_file_single_call():
     board = _make_board()
     caller = _EchoCaller()
     out = synthesize(caller, board, _plan(two_sections=False))
-    drafts = [p for p in caller.prompts if "coverage editor" not in p]
+    drafts = [p for p in caller.prompts
+              if "coverage editor" not in p and "factual auditor" not in p]
     assert len(drafts) == 1
     assert "## Alpha" in out["output.docx"]
 
@@ -279,7 +284,8 @@ def test_requirements_visible_in_every_section_call():
                           confidence=0.9))
     caller = _EchoCaller()
     synthesize(caller, board, _plan())
-    drafts = [p for p in caller.prompts if "coverage editor" not in p]
+    drafts = [p for p in caller.prompts
+              if "coverage editor" not in p and "factual auditor" not in p]
     assert all("must be addressed to the court" in p for p in drafts)
 
 
@@ -287,6 +293,7 @@ def test_requirements_visible_in_every_section_call():
 
 def test_repair_scoped_to_single_section(monkeypatch):
     monkeypatch.setenv("LOOP_SYNTHESIS_REPAIR", "1")
+    monkeypatch.setenv("LOOP_SYNTHESIS_VERIFY", "0")
     import importlib
     import src.loop.synthesis as syn
     importlib.reload(syn)

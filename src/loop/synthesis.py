@@ -26,6 +26,55 @@ _REPAIR_ENABLED = os.getenv("LOOP_SYNTHESIS_REPAIR", "1").strip() in (
 )
 _REPAIR_DRAFT_CAP = int(os.getenv("LOOP_SYNTHESIS_REPAIR_DRAFT_CAP", "120000"))
 
+_VERIFICATION_ENABLED = os.getenv("LOOP_SYNTHESIS_VERIFY", "1").strip() in (
+    "1", "true", "yes",
+)
+_VERIFICATION_BUDGET_RATIO = 0.15
+_AUDIT_MAX_FINDINGS = 12
+class VerificationLedger:
+    """Task-level budget for all verification calls (audit + correction + re-audit).
+
+    Created once at synthesize() entry; shared across every file/section/chunk.
+    Budget = 15% of cumulative synthesis drafting tokens (input+output).
+    The budget grows as draft calls accumulate; verification calls are charged
+    against the running budget.
+    """
+
+    def __init__(self) -> None:
+        self.draft_tokens = 0
+        self.spent = 0
+        self.calls = 0
+        self.chunks_audited = 0
+        self.chunks_corrected = 0
+        self.chunks_withheld = 0
+        self.chunks_clean = 0
+
+    @property
+    def budget(self) -> int:
+        return int(self.draft_tokens * _VERIFICATION_BUDGET_RATIO)
+
+    def add_draft_tokens(self, input_tokens: int, output_tokens: int) -> None:
+        self.draft_tokens += input_tokens + output_tokens
+
+    def can_reserve(self) -> bool:
+        return self.spent < self.budget
+
+    def charge(self, input_tokens: int, output_tokens: int) -> None:
+        self.spent += input_tokens + output_tokens
+        self.calls += 1
+
+    def summary(self) -> dict:
+        return {
+            "draft_tokens": self.draft_tokens,
+            "budget": self.budget,
+            "spent": self.spent,
+            "calls": self.calls,
+            "chunks_audited": self.chunks_audited,
+            "chunks_corrected": self.chunks_corrected,
+            "chunks_withheld": self.chunks_withheld,
+            "chunks_clean": self.chunks_clean,
+        }
+
 _SYNTHESIS_HYDRATE = os.getenv("LOOP_SYNTHESIS_HYDRATE", "0").strip().lower() in (
     "1", "true", "yes",
 )
@@ -468,8 +517,10 @@ def _synthesize_section(caller, repairer, board: Board, *, filename: str,
                         file_form: str, format_rules: str,
                         section: dict, chunk: list[dict], chunk_index: int,
                         chunk_count: int,
-                        sec_chunks: list | None = None) -> tuple[str, dict]:
-    """Draft (and, when enabled, repair) exactly one section chunk against
+                        sec_chunks: list | None = None,
+                        ledger: VerificationLedger | None = None,
+                        ) -> tuple[str, dict]:
+    """Draft (and, when enabled, verify) exactly one section chunk against
     exactly its serialized items. Returns (text, chunk_manifest).
 
     The chunk manifest is registered into sec_chunks BEFORE the model call
@@ -599,8 +650,26 @@ Write ONLY this section's content (no document title, no other sections, no meta
         )
         raise
     manifest["result"] = "ok" if text.strip() else "empty"
+    draft_in = board.tokens_input - tin0
+    draft_out = board.tokens_output - tout0
+    if ledger is not None:
+        ledger.add_draft_tokens(draft_in, draft_out)
 
-    if text and _REPAIR_ENABLED:
+    is_xlsx = filename.lower().endswith(".xlsx")
+
+    if text and _VERIFICATION_ENABLED and ledger is not None:
+        verified, v_record = _verify_chunk(
+            repairer, board, ledger,
+            draft=text, payloads=payloads, claim_ids=claim_ids,
+            section_title=section["title"], filename=filename,
+            is_xlsx=is_xlsx,
+        )
+        manifest["verify"] = v_record.get("status", "unknown")
+        manifest["verify_record"] = {
+            k: v for k, v in v_record.items() if k != "pre_barrier_draft"
+        }
+        text = verified
+    elif text and _REPAIR_ENABLED:
         try:
             repaired = _repair_section(
                 repairer, board, filename=filename, format_rules=format_rules,
@@ -655,6 +724,327 @@ Return only the complete revised section. No commentary."""
                      max_tokens=32768, temperature=0.15)
 
 
+# ---------------------------------------------------------------------------
+# Verification Barrier V2
+# ---------------------------------------------------------------------------
+
+_AUDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "defect": {"type": "string", "enum": [
+                        "factual_error", "computation_error",
+                        "wrong_entity", "unsupported_claim",
+                        "contradiction", "omission",
+                    ]},
+                    "severity": {"type": "string", "enum": [
+                        "blocking", "advisory",
+                    ]},
+                    "span": {"type": "string"},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["id", "defect", "severity", "span", "explanation"],
+            },
+        },
+    },
+    "required": ["findings"],
+}
+
+_CORRECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "edits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "finding_id": {"type": "string"},
+                    "operation": {"type": "string", "enum": [
+                        "replace", "insert_after", "delete",
+                    ]},
+                    "span": {"type": "string"},
+                    "replacement": {"type": "string"},
+                },
+                "required": ["finding_id", "operation", "span"],
+            },
+        },
+    },
+    "required": ["edits"],
+}
+
+
+def _validate_audit(audit: dict, claim_ids: list[str]) -> bool:
+    """Return True if the audit response is structurally valid."""
+    if not isinstance(audit, dict):
+        return False
+    findings = audit.get("findings")
+    if not isinstance(findings, list):
+        return False
+    if len(findings) > _AUDIT_MAX_FINDINGS:
+        return False
+    seen_ids: set[str] = set()
+    claim_id_set = set(claim_ids)
+    for f in findings:
+        if not isinstance(f, dict):
+            return False
+        fid = f.get("id", "")
+        if not fid or fid in seen_ids:
+            return False
+        seen_ids.add(fid)
+        if f.get("defect") not in (
+            "factual_error", "computation_error", "wrong_entity",
+            "unsupported_claim", "contradiction", "omission",
+        ):
+            return False
+        if f.get("severity") not in ("blocking", "advisory"):
+            return False
+        span = f.get("span", "")
+        if f.get("defect") != "omission" and not span:
+            return False
+    return True
+
+
+def _blocking_findings(audit: dict) -> list[dict]:
+    return [f for f in audit.get("findings", []) if f.get("severity") == "blocking"]
+
+
+def _validate_correction(correction: dict, blocking_ids: set[str]) -> bool:
+    """Return True if the correction response is structurally valid."""
+    if not isinstance(correction, dict):
+        return False
+    edits = correction.get("edits")
+    if not isinstance(edits, list):
+        return False
+    for e in edits:
+        if not isinstance(e, dict):
+            return False
+        if e.get("operation") not in ("replace", "insert_after", "delete"):
+            return False
+        if e.get("finding_id") not in blocking_ids:
+            return False
+        if e.get("operation") != "delete" and not e.get("replacement"):
+            return False
+    return True
+
+
+def _apply_edits(draft: str, edits: list[dict]) -> str | None:
+    """Apply correction edits to the draft. Returns None if any edit fails."""
+    result = draft
+    applied: set[str] = set()
+    for edit in edits:
+        fid = edit.get("finding_id", "")
+        if fid in applied:
+            continue
+        op = edit.get("operation", "")
+        span = edit.get("span", "")
+        replacement = edit.get("replacement", "")
+
+        if op == "replace" and span:
+            if span not in result:
+                return None
+            result = result.replace(span, replacement, 1)
+        elif op == "insert_after" and span:
+            idx = result.find(span)
+            if idx < 0:
+                return None
+            insert_at = idx + len(span)
+            result = result[:insert_at] + replacement + result[insert_at:]
+        elif op == "delete" and span:
+            if span not in result:
+                return None
+            result = result.replace(span, "", 1)
+        else:
+            return None
+        applied.add(fid)
+    return result
+
+
+def _withhold_text(section_title: str, is_xlsx: bool) -> str:
+    """Format-appropriate placeholder for a withheld chunk."""
+    if is_xlsx:
+        return (f"## Sheet: {section_title}\n"
+                "| Verification limitation |\n| --- |\n"
+                f"| This section's content could not be verified against "
+                f"source materials and has been withheld for accuracy. |")
+    return (f"[Verification limitation for \"{section_title}\": this section's "
+            "content could not be verified against source materials and has "
+            "been withheld for accuracy.]")
+
+
+def _verify_chunk(
+    caller, board: Board, ledger: VerificationLedger,
+    *, draft: str, payloads: str, claim_ids: list[str],
+    section_title: str, filename: str, is_xlsx: bool,
+) -> tuple[str, dict]:
+    """Run the verification barrier on one chunk.
+
+    Returns (final_text, verification_record).
+    final_text is either the original draft (clean), corrected text, or
+    a withhold placeholder.
+    """
+    record: dict = {"status": "skipped", "pre_barrier_draft": draft}
+
+    if not ledger.can_reserve():
+        record["status"] = "budget_exhausted"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    ledger.chunks_audited += 1
+
+    audit_prompt = f"""You are a factual auditor. Compare the DRAFT against its ITEMS and report defects.
+
+ITEMS (the sole source of truth — everything the draft should contain):
+{payloads[:_REPAIR_DRAFT_CAP]}
+
+DRAFT TO AUDIT:
+{draft[:_REPAIR_DRAFT_CAP]}
+
+Report up to {_AUDIT_MAX_FINDINGS} findings. Each finding must have:
+- id: unique string (f1, f2, ...)
+- defect: one of factual_error, computation_error, wrong_entity, unsupported_claim, contradiction, omission
+- severity: "blocking" (would mislead the reader) or "advisory" (style/minor)
+- span: the exact text from the draft containing the defect (empty string for omissions)
+- explanation: why this is wrong, citing the specific item that contradicts it
+
+If the draft is faithful to its items, return {{"findings": []}}."""
+
+    tin0, tout0 = board.tokens_input, board.tokens_output
+    try:
+        audit = call_json(caller, board, audit_prompt, kind="verify_audit",
+                          max_tokens=4096, temperature=0.0)
+    except Exception:
+        record["status"] = "audit_raised"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    audit_in = board.tokens_input - tin0
+    audit_out = board.tokens_output - tout0
+    ledger.charge(audit_in, audit_out)
+    record["audit_tokens"] = {"input": audit_in, "output": audit_out}
+
+    if not _validate_audit(audit, claim_ids):
+        record["status"] = "audit_invalid"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    record["audit_findings"] = len(audit.get("findings", []))
+    blockers = _blocking_findings(audit)
+    record["audit_blockers"] = len(blockers)
+
+    if not blockers:
+        record["status"] = "audit_clean"
+        ledger.chunks_clean += 1
+        return draft, record
+
+    if not ledger.can_reserve():
+        record["status"] = "budget_exhausted"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    blocking_ids = {f["id"] for f in blockers}
+    blocker_text = "\n".join(
+        f"- {f['id']}: [{f['defect']}] span=\"{f['span'][:100]}\" — {f['explanation'][:200]}"
+        for f in blockers
+    )
+
+    correction_prompt = f"""You are a precision editor. Fix ONLY the blocking defects listed below by producing targeted edit operations on the draft.
+
+BLOCKING DEFECTS:
+{blocker_text}
+
+ITEMS (source of truth):
+{payloads[:_REPAIR_DRAFT_CAP]}
+
+DRAFT:
+{draft[:_REPAIR_DRAFT_CAP]}
+
+For each blocking defect, produce one edit:
+- finding_id: the defect id
+- operation: "replace" (swap span with replacement), "insert_after" (add after span), or "delete" (remove span)
+- span: exact text from the draft to target
+- replacement: the corrected text (omit for delete)
+
+Return {{"edits": [...]}}. Fix ONLY the blocking defects — do not rewrite other content."""
+
+    tin0, tout0 = board.tokens_input, board.tokens_output
+    try:
+        correction = call_json(caller, board, correction_prompt,
+                               kind="verify_correct", max_tokens=4096,
+                               temperature=0.0)
+    except Exception:
+        record["status"] = "correct_raised"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    corr_in = board.tokens_input - tin0
+    corr_out = board.tokens_output - tout0
+    ledger.charge(corr_in, corr_out)
+    record["correct_tokens"] = {"input": corr_in, "output": corr_out}
+
+    if not _validate_correction(correction, blocking_ids):
+        record["status"] = "correct_invalid"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    corrected = _apply_edits(draft, correction.get("edits", []))
+    if corrected is None:
+        record["status"] = "edit_failed"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    if not ledger.can_reserve():
+        record["status"] = "budget_exhausted"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    reaudit_prompt = f"""You are a factual auditor performing a re-audit after corrections. Compare the CORRECTED DRAFT against its ITEMS.
+
+ITEMS (sole source of truth):
+{payloads[:_REPAIR_DRAFT_CAP]}
+
+CORRECTED DRAFT:
+{corrected[:_REPAIR_DRAFT_CAP]}
+
+Report any remaining defects using the same format. If all blocking defects are resolved, return {{"findings": []}}."""
+
+    tin0, tout0 = board.tokens_input, board.tokens_output
+    try:
+        reaudit = call_json(caller, board, reaudit_prompt,
+                            kind="verify_reaudit", max_tokens=4096,
+                            temperature=0.0)
+    except Exception:
+        record["status"] = "reaudit_raised"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    reaudit_in = board.tokens_input - tin0
+    reaudit_out = board.tokens_output - tout0
+    ledger.charge(reaudit_in, reaudit_out)
+    record["reaudit_tokens"] = {"input": reaudit_in, "output": reaudit_out}
+
+    if not _validate_audit(reaudit, claim_ids):
+        record["status"] = "reaudit_invalid"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    reaudit_blockers = _blocking_findings(reaudit)
+    record["reaudit_blockers"] = len(reaudit_blockers)
+
+    if reaudit_blockers:
+        record["status"] = "reaudit_blockers"
+        ledger.chunks_withheld += 1
+        return _withhold_text(section_title, is_xlsx), record
+
+    record["status"] = "corrected"
+    ledger.chunks_corrected += 1
+    return corrected, record
+
+
 def _assemble_sections(filename: str, section_outputs: list[tuple[str, list[str]]],
                        residual_note: str) -> str:
     """Deterministic assembly: code supplies headings and concatenates in plan
@@ -698,6 +1088,9 @@ def synthesize(smart_caller, board: Board, plan: dict,
     """
     repairer = repair_caller or smart_caller
     results: dict[str, str] = {}
+    ledger: VerificationLedger | None = None
+    if _VERIFICATION_ENABLED:
+        ledger = VerificationLedger()
     deliverables = board.metadata.get("deliverables", {})
     required = list(deliverables.values()) if deliverables else ["output.docx"]
 
@@ -832,6 +1225,7 @@ def synthesize(smart_caller, board: Board, plan: dict,
                     section=section, chunk=chunk,
                     chunk_index=i, chunk_count=len(chunks),
                     sec_chunks=sec_manifest["chunks"],  # registered pre-call
+                    ledger=ledger,
                 )
                 texts.append(text)
                 total_calls += 1
@@ -891,6 +1285,16 @@ def synthesize(smart_caller, board: Board, plan: dict,
                                     for c in s["chunks"]]}
                         for s in file_manifest["sections"]
                     ]},
+        )
+
+    if ledger is not None:
+        board.log(
+            "verification_ledger",
+            f"V2 barrier: {ledger.chunks_audited} audited, "
+            f"{ledger.chunks_clean} clean, {ledger.chunks_corrected} corrected, "
+            f"{ledger.chunks_withheld} withheld, "
+            f"{ledger.spent}/{ledger.budget} tokens ({ledger.calls} calls)",
+            detail=ledger.summary(),
         )
 
     return results
