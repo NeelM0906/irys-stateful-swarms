@@ -848,10 +848,6 @@ def _validate_audit(raw, *, draft: str, scope_sha256: str,
         elif anchor is not None:
             if isinstance(anchor, str) and anchor and anchor not in draft:
                 return None, f"anchor_not_in_draft:{anchor[:60]}"
-        if item_ids:
-            for cid in f.get("claim_ids", []):
-                if cid not in item_ids:
-                    return None, f"out_of_scope_id:{cid}"
     return raw, None
 
 
