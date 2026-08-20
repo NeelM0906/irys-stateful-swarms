@@ -709,3 +709,20 @@ def test_shadow_verification_skipped_when_disabled(monkeypatch, tmp_path):
     synthesize(caller, board, _plan())
     shadow_path = tmp_path / "loop" / "verification_shadow.json"
     assert not shadow_path.exists()
+
+
+def test_shadow_persisted_on_empty_assembly_error(monkeypatch, tmp_path):
+    import pytest as _pytest
+    import src.loop.synthesis as syn
+    from src.loop.synthesis import EmptyAssemblyError
+    monkeypatch.setattr(syn, "_VERIFICATION_SHADOW", True)
+    board = _make_board()
+    board.output_dir = str(tmp_path)
+    caller = _EchoCaller(empty_for=("Alpha", "Beta"))
+    with _pytest.raises(EmptyAssemblyError):
+        synthesize(caller, board, _plan())
+    shadow_path = tmp_path / "loop" / "verification_shadow.json"
+    assert shadow_path.exists()
+    data = json.loads(shadow_path.read_text(encoding="utf-8"))
+    assert data["summary"]["chunks_skipped"] >= 1
+    assert all(e["reason"] == "empty_draft" for e in data["entries"])

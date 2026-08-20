@@ -915,6 +915,11 @@ def synthesize(smart_caller, board: Board, plan: dict,
                 detail={"filename": filename, "reason": "all_sections_empty",
                         "sections": [t for t, _ in section_outputs]},
             )
+            if verification_ledger is not None:
+                _dump_verification_shadow(board, verification_ledger)
+                board.log("verification_shadow",
+                          f"V3 shadow complete: {verification_ledger.summary()}",
+                          detail=verification_ledger.summary())
             raise EmptyAssemblyError(
                 f"{filename}: all {len(section_outputs)} sections produced "
                 "no synthesized content")
