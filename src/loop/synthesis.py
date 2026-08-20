@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 from .hydration import build_evidence_context
@@ -30,6 +31,10 @@ _SYNTHESIS_HYDRATE = os.getenv("LOOP_SYNTHESIS_HYDRATE", "0").strip().lower() in
     "1", "true", "yes",
 )
 _SYNTHESIS_HYDRATE_MAX = int(os.getenv("LOOP_SYNTHESIS_HYDRATE_MAX_CHARS", "400000"))
+
+_VERIFICATION_SHADOW = os.getenv(
+    "LOOP_SYNTHESIS_VERIFICATION_SHADOW", "0"
+).strip().lower() in ("1", "true", "yes")
 
 
 def _dedup_claims(claims, cap: int) -> list:
@@ -468,7 +473,9 @@ def _synthesize_section(caller, repairer, board: Board, *, filename: str,
                         file_form: str, format_rules: str,
                         section: dict, chunk: list[dict], chunk_index: int,
                         chunk_count: int,
-                        sec_chunks: list | None = None) -> tuple[str, dict]:
+                        sec_chunks: list | None = None,
+                        verification_ledger: "VerificationLedger | None" = None,
+                        ) -> tuple[str, dict]:
     """Draft (and, when enabled, repair) exactly one section chunk against
     exactly its serialized items. Returns (text, chunk_manifest).
 
@@ -619,6 +626,14 @@ Write ONLY this section's content (no document title, no other sections, no meta
         else:
             manifest["repair"] = "discarded"
 
+    if _VERIFICATION_SHADOW and verification_ledger is not None and text.strip():
+        shadow = _shadow_verify_chunk(
+            caller, board, draft=text, chunk=chunk,
+            filename=filename, section_title=section["title"],
+            chunk_index=chunk_index, ledger=verification_ledger,
+        )
+        manifest["verification_shadow"] = shadow
+
     manifest["tokens_in"] = board.tokens_input - tin0
     manifest["tokens_out"] = board.tokens_output - tout0
     return text, manifest
@@ -697,6 +712,7 @@ def synthesize(smart_caller, board: Board, plan: dict,
     repair_caller, if provided, handles scoped repair passes (cheaper model).
     """
     repairer = repair_caller or smart_caller
+    verification_ledger = VerificationLedger() if _VERIFICATION_SHADOW else None
     results: dict[str, str] = {}
     deliverables = board.metadata.get("deliverables", {})
     required = list(deliverables.values()) if deliverables else ["output.docx"]
@@ -831,7 +847,8 @@ def synthesize(smart_caller, board: Board, plan: dict,
                     format_rules=format_rules,
                     section=section, chunk=chunk,
                     chunk_index=i, chunk_count=len(chunks),
-                    sec_chunks=sec_manifest["chunks"],  # registered pre-call
+                    sec_chunks=sec_manifest["chunks"],
+                    verification_ledger=verification_ledger,
                 )
                 texts.append(text)
                 total_calls += 1
@@ -893,6 +910,12 @@ def synthesize(smart_caller, board: Board, plan: dict,
                     ]},
         )
 
+    if verification_ledger is not None:
+        _dump_verification_shadow(board, verification_ledger)
+        board.log("verification_shadow",
+                  f"V3 shadow complete: {verification_ledger.summary()}",
+                  detail=verification_ledger.summary())
+
     return results
 
 
@@ -922,6 +945,340 @@ def _usable_repair(draft: str, repaired: str | None) -> bool:
     if len(draft) < 1200:
         return len(cleaned) >= len(draft) * 0.5
     return len(cleaned) >= max(1200, int(len(draft) * 0.6))
+
+
+# --- Shadow Verification V3 ---
+
+_BLOCKING_DEFECTS = frozenset({
+    "factual_error", "numerical_error", "unsupported_claim",
+    "contradicts_source", "fabricated_detail",
+})
+_ADVISORY_DEFECTS = frozenset({
+    "missing_nuance", "imprecise_language", "style",
+})
+_KNOWN_DEFECTS = _BLOCKING_DEFECTS | _ADVISORY_DEFECTS
+_VERIFICATION_AUDIT_MAX_TOKENS = 8192
+
+
+class VerificationUnavailableError(RuntimeError):
+    pass
+
+
+class VerificationBlockedError(RuntimeError):
+    pass
+
+
+class VerificationLedger:
+    def __init__(self):
+        self.chunks_verified = 0
+        self.chunks_clean = 0
+        self.chunks_corrected = 0
+        self.chunks_failed = 0
+        self.invalid_audits = 0
+        self.invalid_re_audits = 0
+        self.edits_applied = 0
+        self.errors_caught = 0
+        self.activation_eligible = 0
+        self.entries: list[dict] = []
+
+    def record(self, entry: dict) -> None:
+        self.chunks_verified += 1
+        status = entry.get("status", "failed")
+        if status == "clean":
+            self.chunks_clean += 1
+            self.activation_eligible += 1
+        elif status == "corrected":
+            self.chunks_corrected += 1
+            self.edits_applied += entry.get("edits_applied", 0)
+            self.errors_caught += entry.get("errors_caught", 0)
+            self.activation_eligible += 1
+        else:
+            self.chunks_failed += 1
+            reason = entry.get("reason", "")
+            if "invalid_audit" in reason:
+                self.invalid_audits += 1
+            if "invalid_re_audit" in reason:
+                self.invalid_re_audits += 1
+        self.entries.append(entry)
+
+    def summary(self) -> dict:
+        return {
+            "chunks_verified": self.chunks_verified,
+            "chunks_clean": self.chunks_clean,
+            "chunks_corrected": self.chunks_corrected,
+            "chunks_failed": self.chunks_failed,
+            "invalid_audits": self.invalid_audits,
+            "invalid_re_audits": self.invalid_re_audits,
+            "edits_applied": self.edits_applied,
+            "errors_caught": self.errors_caught,
+            "activation_eligible": self.activation_eligible,
+        }
+
+
+def _semantic_verification_scopes(chunk: list[dict]) -> dict[str, list[str]]:
+    scopes: dict[str, list[str]] = {}
+    for it in chunk:
+        tp = it.get("type", "")
+        if tp == "claim":
+            tid = it["payload"].get("target", {}).get("target_id", "")
+            if tid:
+                scopes.setdefault(f"target:{tid}", []).extend(
+                    c.id for c in it.get("claims", []))
+        elif tp == "unit":
+            for uid in it.get("unit_ids", []):
+                scopes.setdefault(f"unit:{uid}", []).extend(
+                    c.id for c in it.get("claims", []))
+        elif tp == "requirement":
+            for c in it.get("claims", []):
+                scopes.setdefault(f"requirement:{c.id}", [c.id])
+    return scopes
+
+
+def _build_audit_prompt(draft: str, scopes: dict[str, list[str]],
+                        items_text: str) -> str:
+    scope_lines = json.dumps(scopes, indent=1)
+    return f"""You are a factual accuracy auditor. Examine the draft against its source items. Report only defects provable from the items.
+
+VERIFICATION SCOPES (semantic units of the analysis):
+{scope_lines}
+
+SOURCE ITEMS (ground truth):
+{items_text}
+
+DRAFT TO AUDIT:
+{draft}
+
+Return JSON. If no defects: {{"findings": []}}
+
+Otherwise:
+{{"findings": [{{
+  "finding_id": "f1",
+  "defect_type": "<factual_error|numerical_error|unsupported_claim|contradicts_source|fabricated_detail|missing_nuance|imprecise_language>",
+  "scope_id": "<scope from above>",
+  "impact": "<blocking|advisory>",
+  "description": "<what is wrong>",
+  "operation": "<replace|delete|insert_after>",
+  "match": "<exact substring of draft>",
+  "replacement": "<corrected text>"
+}}]}}
+
+Rules: "match" must be exact substring of draft. scope_id must be from the scopes above. For delete, omit replacement. Only blocking types (factual_error, numerical_error, unsupported_claim, contradicts_source, fabricated_detail) trigger correction."""
+
+
+def _validate_verification_audit(raw, valid_scopes: set[str],
+                                 draft: str
+                                 ) -> tuple[list[dict] | None, str | None]:
+    if not isinstance(raw, dict):
+        return None, "not_dict"
+    findings = raw.get("findings")
+    if not isinstance(findings, list):
+        return None, "findings_not_list"
+    for f in findings:
+        if not isinstance(f, dict):
+            return None, "finding_not_dict"
+        if not f.get("finding_id"):
+            return None, "missing_finding_id"
+        if f.get("defect_type", "") not in _KNOWN_DEFECTS:
+            return None, f"unknown_defect:{f.get('defect_type', '')}"
+        if f.get("scope_id", "") not in valid_scopes:
+            return None, f"invalid_scope:{f.get('scope_id', '')}"
+        op = f.get("operation", "")
+        if op not in ("replace", "delete", "insert_after"):
+            return None, f"invalid_op:{op}"
+        match = f.get("match", "")
+        if not match:
+            return None, f"empty_match:{f['finding_id']}"
+        if match not in draft:
+            return None, f"match_not_found:{f['finding_id']}:{match[:60]}"
+        if op == "replace" and not f.get("replacement"):
+            return None, f"empty_replacement:{f['finding_id']}"
+    return findings, None
+
+
+def _apply_verification_edits(draft: str, findings: list[dict]
+                              ) -> tuple[str | None, str | None]:
+    intervals: list[tuple[int, int, str, str]] = []
+    for f in findings:
+        match_text = f["match"]
+        op = f["operation"]
+        replacement = f.get("replacement", "")
+        idx = draft.find(match_text)
+        if idx == -1:
+            return None, f"match_lost:{f['finding_id']}"
+        if op == "replace":
+            intervals.append((idx, idx + len(match_text), replacement,
+                              f["finding_id"]))
+        elif op == "delete":
+            intervals.append((idx, idx + len(match_text), "",
+                              f["finding_id"]))
+        elif op == "insert_after":
+            end = idx + len(match_text)
+            intervals.append((end, end, replacement, f["finding_id"]))
+    intervals.sort(key=lambda x: x[0])
+    for i in range(1, len(intervals)):
+        if intervals[i][0] < intervals[i - 1][1]:
+            return None, f"overlap:{intervals[i - 1][3]}/{intervals[i][3]}"
+    parts: list[str] = []
+    cursor = 0
+    for start, end, repl, _ in intervals:
+        parts.append(draft[cursor:start])
+        parts.append(repl)
+        cursor = end
+    parts.append(draft[cursor:])
+    result = "".join(parts)
+    if not result.strip():
+        return None, "empty_result"
+    return result, None
+
+
+def _shadow_verify_chunk(caller, board: Board, *, draft: str,
+                         chunk: list[dict], filename: str,
+                         section_title: str, chunk_index: int,
+                         ledger: "VerificationLedger") -> dict:
+    t0 = time.monotonic()
+    control_hash = hashlib.sha256(draft.encode("utf-8")).hexdigest()
+    scopes = _semantic_verification_scopes(chunk)
+    if not scopes or not draft.strip():
+        entry = {"status": "skipped",
+                 "reason": "no_scopes" if not scopes else "empty_draft",
+                 "control_hash": control_hash}
+        ledger.record(entry)
+        return entry
+
+    items_text = _CHUNK_SEP.join(
+        it["serialized"] for it in chunk if it.get("type") != "requirement")
+    prompt = _build_audit_prompt(draft, scopes, items_text)
+    scope_set = set(scopes.keys())
+
+    tin0, tout0 = board.tokens_input, board.tokens_output
+    try:
+        audit_raw = call_json(caller, board, prompt,
+                              kind="verification_audit",
+                              max_tokens=_VERIFICATION_AUDIT_MAX_TOKENS,
+                              temperature=0.1)
+    except Exception as exc:
+        entry = {"status": "failed",
+                 "reason": f"audit_error:{str(exc)[:100]}",
+                 "control_hash": control_hash,
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    findings, err = _validate_verification_audit(audit_raw, scope_set, draft)
+    if err:
+        entry = {"status": "failed",
+                 "reason": f"invalid_audit:{err}",
+                 "control_hash": control_hash,
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    blocking = [f for f in findings
+                if f.get("defect_type") in _BLOCKING_DEFECTS
+                or f.get("impact") == "blocking"]
+    if not blocking:
+        entry = {"status": "clean", "control_hash": control_hash,
+                 "advisory_count": len(findings),
+                 "activation_eligible": True,
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    candidate, edit_err = _apply_verification_edits(draft, blocking)
+    if edit_err:
+        entry = {"status": "failed",
+                 "reason": f"edit_failure:{edit_err}",
+                 "control_hash": control_hash,
+                 "blocking_count": len(blocking),
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    candidate_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+
+    re_prompt = _build_audit_prompt(candidate, scopes, items_text)
+    try:
+        re_raw = call_json(caller, board, re_prompt,
+                           kind="verification_re_audit",
+                           max_tokens=_VERIFICATION_AUDIT_MAX_TOKENS,
+                           temperature=0.1)
+    except Exception as exc:
+        entry = {"status": "failed",
+                 "reason": f"re_audit_error:{str(exc)[:100]}",
+                 "control_hash": control_hash,
+                 "candidate_hash": candidate_hash,
+                 "edits_applied": len(blocking),
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    re_findings, re_err = _validate_verification_audit(
+        re_raw, scope_set, candidate)
+    if re_err:
+        entry = {"status": "failed",
+                 "reason": f"invalid_re_audit:{re_err}",
+                 "control_hash": control_hash,
+                 "candidate_hash": candidate_hash,
+                 "edits_applied": len(blocking),
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    re_blocking = [f for f in re_findings
+                   if f.get("defect_type") in _BLOCKING_DEFECTS
+                   or f.get("impact") == "blocking"]
+    if re_blocking:
+        entry = {"status": "failed",
+                 "reason": "residual_blockers",
+                 "control_hash": control_hash,
+                 "candidate_hash": candidate_hash,
+                 "candidate_text": candidate,
+                 "edits_applied": len(blocking),
+                 "residual_count": len(re_blocking),
+                 "activation_eligible": False,
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
+    entry = {"status": "corrected", "control_hash": control_hash,
+             "candidate_hash": candidate_hash,
+             "candidate_text": candidate,
+             "edits_applied": len(blocking),
+             "errors_caught": len(blocking),
+             "activation_eligible": True,
+             "tokens_in": board.tokens_input - tin0,
+             "tokens_out": board.tokens_output - tout0,
+             "elapsed_s": round(time.monotonic() - t0, 2)}
+    ledger.record(entry)
+    return entry
+
+
+def _dump_verification_shadow(board: Board,
+                              ledger: "VerificationLedger") -> None:
+    if not board.output_dir:
+        return
+    try:
+        d = Path(board.output_dir) / "loop"
+        d.mkdir(parents=True, exist_ok=True)
+        data = {"summary": ledger.summary(), "entries": ledger.entries}
+        (d / "verification_shadow.json").write_text(
+            json.dumps(data, indent=1, default=str), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _dump_packets(board: Board, filename: str, packet_blocks) -> None:
