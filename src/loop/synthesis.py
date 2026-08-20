@@ -638,9 +638,12 @@ Write ONLY this section's content (no document title, no other sections, no meta
                       "reason": "exception_containment",
                       "control_hash": hashlib.sha256(
                           text.encode("utf-8")).hexdigest(),
+                      "control_fallback": True,
+                      "activation_eligible": False,
                       "filename": filename,
                       "section_title": section["title"],
-                      "chunk_index": chunk_index}
+                      "chunk_index": chunk_index,
+                      "scope_ids": []}
             verification_ledger.record(shadow)
         manifest["verification_shadow"] = shadow
 
@@ -1041,8 +1044,9 @@ def _semantic_verification_scopes(chunk: list[dict]) -> dict[str, list[str]]:
                     c.id for c in it.get("claims", []))
         elif tp == "unit":
             for uid in it.get("unit_ids", []):
-                scopes.setdefault(f"unit:{uid}", []).extend(
-                    c.id for c in it.get("claims", []))
+                ids = [c.id for c in it.get("claims", [])]
+                ids += [c.id for c in it.get("context_claims", [])]
+                scopes.setdefault(f"unit:{uid}", []).extend(ids)
         elif tp == "requirement":
             for c in it.get("claims", []):
                 scopes.setdefault(f"requirement:{c.id}", [c.id])
@@ -1080,6 +1084,16 @@ Otherwise:
 Rules: "match" must be exact substring of draft. scope_id must be from the scopes above. For delete, omit replacement. Only blocking types (factual_error, numerical_error, unsupported_claim, contradicts_source, fabricated_detail) trigger correction."""
 
 
+def _count_overlapping(haystack: str, needle: str) -> int:
+    count = start = 0
+    while True:
+        idx = haystack.find(needle, start)
+        if idx == -1:
+            return count
+        count += 1
+        start = idx + 1
+
+
 def _validate_verification_audit(raw, valid_scopes: set[str],
                                  draft: str
                                  ) -> tuple[list[dict] | None, str | None]:
@@ -1108,17 +1122,27 @@ def _validate_verification_audit(raw, valid_scopes: set[str],
         if not isinstance(op, str) or op not in ("replace", "delete",
                                                   "insert_after"):
             return None, f"invalid_op:{op}"
+        desc = f.get("description")
+        if desc is not None and not isinstance(desc, str):
+            return None, f"invalid_description:{fid}"
+        impact = f.get("impact")
+        if impact is not None and not isinstance(impact, str):
+            return None, f"invalid_impact:{fid}"
         match = f.get("match")
         if not isinstance(match, str) or not match:
             return None, f"empty_match:{fid}"
         if match not in draft:
             return None, f"match_not_found:{fid}:{match[:60]}"
-        if draft.count(match) > 1:
+        if _count_overlapping(draft, match) > 1:
             return None, f"ambiguous_match:{fid}:{match[:60]}"
         if op in ("replace", "insert_after"):
             repl = f.get("replacement")
             if not isinstance(repl, str) or not repl:
                 return None, f"empty_replacement:{fid}"
+        elif op == "delete":
+            repl = f.get("replacement")
+            if repl is not None and not isinstance(repl, str):
+                return None, f"invalid_delete_replacement:{fid}"
     return findings, None
 
 
@@ -1174,7 +1198,8 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
                  "reason": "no_scopes" if not scopes else "empty_draft",
                  "control_hash": control_hash,
                  "filename": filename, "section_title": section_title,
-                 "chunk_index": chunk_index}
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()) if scopes else []}
         ledger.record(entry)
         return entry
 

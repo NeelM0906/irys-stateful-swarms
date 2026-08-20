@@ -168,6 +168,17 @@ class TestSemanticVerificationScopes:
     def test_empty_chunk(self):
         assert syn._semantic_verification_scopes([]) == {}
 
+    def test_unit_items_include_context_claims(self):
+        items = [{"type": "unit",
+                  "payload": {"unit": {"unit_id": "u1"}},
+                  "serialized": "{}",
+                  "claims": [FakeClaim("c1")],
+                  "context_claims": [FakeClaim("cc1"), FakeClaim("cc2")],
+                  "unit_ids": ["u1"]}]
+        scopes = syn._semantic_verification_scopes(items)
+        assert "unit:u1" in scopes
+        assert set(scopes["unit:u1"]) == {"c1", "cc1", "cc2"}
+
     def test_missing_target_id(self):
         items = [{"type": "claim",
                   "payload": {"target": {}, "claim": {"id": "c1"}},
@@ -350,6 +361,50 @@ class TestValidateVerificationAudit:
                              "replacement": "$6 million"}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
         assert "empty_match" in err
+
+    def test_overlapping_ambiguous_match_rejected(self):
+        draft = "111"
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "11",
+                             "replacement": "22"}]}
+        _, err = syn._validate_verification_audit(
+            raw, self.SCOPES, draft)
+        assert "ambiguous_match" in err
+
+    def test_non_string_impact_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million",
+                             "impact": 42}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "invalid_impact" in err
+
+    def test_non_string_description_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million",
+                             "description": {"nested": True}}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "invalid_description" in err
+
+    def test_delete_non_string_replacement_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "unsupported_claim",
+                             "scope_id": "target:t1",
+                             "operation": "delete",
+                             "match": " in revenue",
+                             "replacement": {"bad": True}}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "invalid_delete_replacement" in err
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +717,17 @@ class TestShadowVerifyChunk:
             chunk_index=3, ledger=ledger)
         assert result["filename"] == "out.docx"
         assert result["chunk_index"] == 3
+        assert "scope_ids" in result
+
+    def test_skipped_no_scopes_empty_scope_ids(self, monkeypatch):
+        ledger = syn.VerificationLedger()
+        chunk = [{"type": "unknown", "payload": {}, "serialized": "{}",
+                  "claims": [], "unit_ids": []}]
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Some text.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["scope_ids"] == []
 
     def test_requirement_scoped_finding_not_blocking(self, monkeypatch):
         audit = {"findings": [{
