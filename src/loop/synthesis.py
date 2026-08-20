@@ -21,10 +21,13 @@ from .state import Board, Target
 _CLAIMS_PER_TARGET = 48
 _CONTENT_CAP = 500
 _EVIDENCE_CAP = 220
-_REPAIR_ENABLED = os.getenv("LOOP_SYNTHESIS_REPAIR", "1").strip() in (
+_VERIFICATION_ENABLED = os.getenv("LOOP_SYNTHESIS_VERIFY", "1").strip() in (
     "1", "true", "yes",
 )
-_REPAIR_DRAFT_CAP = int(os.getenv("LOOP_SYNTHESIS_REPAIR_DRAFT_CAP", "120000"))
+_AUDIT_MAX_FINDINGS = 12
+_AUDIT_MAX_TOKENS = 8192
+_CORRECTION_MAX_TOKENS = 8192
+_VERIFICATION_EXTRA_BUDGET_RATIO = 0.15
 
 _SYNTHESIS_HYDRATE = os.getenv("LOOP_SYNTHESIS_HYDRATE", "0").strip().lower() in (
     "1", "true", "yes",
@@ -600,59 +603,413 @@ Write ONLY this section's content (no document title, no other sections, no meta
         raise
     manifest["result"] = "ok" if text.strip() else "empty"
 
-    if text and _REPAIR_ENABLED:
+    if text and _VERIFICATION_ENABLED:
+        scope_material = draft_text_for_scope = text
+        scope_sha = hashlib.sha256(
+            (scope_material + payloads + source_text_block).encode()
+        ).hexdigest()
+        all_item_ids = set(claim_ids + requirement_ids + unit_ids)
+
+        tin_audit0 = board.tokens_input
         try:
-            repaired = _repair_section(
-                repairer, board, filename=filename, format_rules=format_rules,
-                section=section, payloads=payloads,
-                coverage_lines=coverage_lines,
-                source_text_block=source_text_block, draft=text,
+            raw_audit = _audit_section(
+                repairer, board, draft=text, payloads=payloads,
+                source_text_block=source_text_block,
+                scope_sha256=scope_sha, pass_name="initial",
             )
         except Exception:
-            manifest["repair"] = "raised"
+            manifest["verify"] = "audit_raised"
             manifest["tokens_in"] = board.tokens_input - tin0
             manifest["tokens_out"] = board.tokens_output - tout0
             raise
-        if _usable_repair(text, repaired):
-            text = repaired
-            manifest["repair"] = "kept"
+        manifest["audit_tokens_in"] = board.tokens_input - tin_audit0
+
+        audit, val_err = _validate_audit(raw_audit, draft=text,
+                                         scope_sha256=scope_sha,
+                                         item_ids=all_item_ids)
+        if val_err:
+            text = _degrade_unresolved(
+                text, filename=filename,
+                section_title=section["title"],
+                findings=None, reason=f"audit_invalid: {val_err}",
+            )
+            manifest["verify"] = "audit_invalid"
+            manifest["verify_reason"] = val_err
         else:
-            manifest["repair"] = "discarded"
+            blockers = _blocking_findings(audit)
+            advisories = [f for f in audit.get("findings", [])
+                          if f not in blockers]
+            manifest["audit_findings"] = len(audit.get("findings", []))
+            manifest["audit_blockers"] = len(blockers)
+            manifest["audit_advisories"] = len(advisories)
+
+            if not blockers:
+                manifest["verify"] = "audit_clean"
+            else:
+                vbudget_limit = int(
+                    board.token_budget * _VERIFICATION_EXTRA_BUDGET_RATIO)
+                vbudget_used = board.tokens_input - tin_audit0
+                vbudget_remaining = vbudget_limit - vbudget_used
+
+                audit_input_est = board.tokens_input - tin_audit0
+                reserve_needed = audit_input_est * 2
+                if vbudget_remaining < reserve_needed:
+                    text = _degrade_unresolved(
+                        text, filename=filename,
+                        section_title=section["title"],
+                        findings=blockers,
+                        reason="budget_exhausted",
+                    )
+                    manifest["verify"] = "budget_exhausted"
+                else:
+                    finding_ctx = _finding_context(chunk, blockers)
+                    tin_corr0 = board.tokens_input
+                    try:
+                        raw_corr = _correct_findings(
+                            repairer, board, draft=text,
+                            findings=blockers,
+                            finding_context=finding_ctx,
+                            scope_sha256=scope_sha,
+                        )
+                    except Exception:
+                        manifest["verify"] = "correction_raised"
+                        manifest["tokens_in"] = board.tokens_input - tin0
+                        manifest["tokens_out"] = board.tokens_output - tout0
+                        raise
+                    manifest["correction_tokens_in"] = (
+                        board.tokens_input - tin_corr0)
+
+                    candidate, edit_err = _apply_correction_edits(
+                        text, raw_corr, findings=blockers,
+                        scope_sha256=scope_sha,
+                    )
+                    if edit_err:
+                        text = _degrade_unresolved(
+                            text, filename=filename,
+                            section_title=section["title"],
+                            findings=blockers,
+                            reason=f"edit_invalid: {edit_err}",
+                        )
+                        manifest["verify"] = "edit_invalid"
+                        manifest["verify_reason"] = edit_err
+                    else:
+                        tin_reaudit0 = board.tokens_input
+                        try:
+                            raw_re = _audit_section(
+                                repairer, board, draft=candidate,
+                                payloads=payloads,
+                                source_text_block=source_text_block,
+                                scope_sha256=hashlib.sha256(
+                                    (candidate + payloads
+                                     + source_text_block).encode()
+                                ).hexdigest(),
+                                pass_name="re_audit",
+                            )
+                        except Exception:
+                            manifest["verify"] = "reaudit_raised"
+                            manifest["tokens_in"] = (
+                                board.tokens_input - tin0)
+                            manifest["tokens_out"] = (
+                                board.tokens_output - tout0)
+                            raise
+                        manifest["reaudit_tokens_in"] = (
+                            board.tokens_input - tin_reaudit0)
+
+                        re_audit, re_val_err = _validate_audit(
+                            raw_re, draft=candidate,
+                            scope_sha256=hashlib.sha256(
+                                (candidate + payloads
+                                 + source_text_block).encode()
+                            ).hexdigest(),
+                            item_ids=all_item_ids,
+                        )
+                        if re_val_err:
+                            text = _degrade_unresolved(
+                                text, filename=filename,
+                                section_title=section["title"],
+                                findings=blockers,
+                                reason=f"reaudit_invalid: {re_val_err}",
+                            )
+                            manifest["verify"] = "reaudit_invalid"
+                        else:
+                            re_blockers = _blocking_findings(re_audit)
+                            manifest["reaudit_blockers"] = len(re_blockers)
+                            if not re_blockers:
+                                text = candidate
+                                manifest["verify"] = "corrected"
+                            elif len(re_blockers) < len(blockers):
+                                text = _degrade_unresolved(
+                                    candidate, filename=filename,
+                                    section_title=section["title"],
+                                    findings=re_blockers,
+                                    reason="residual_blockers",
+                                )
+                                manifest["verify"] = "partial_degraded"
+                            else:
+                                text = _degrade_unresolved(
+                                    text, filename=filename,
+                                    section_title=section["title"],
+                                    findings=blockers,
+                                    reason="correction_ineffective",
+                                )
+                                manifest["verify"] = "degraded"
 
     manifest["tokens_in"] = board.tokens_input - tin0
     manifest["tokens_out"] = board.tokens_output - tout0
     return text, manifest
 
 
-def _repair_section(caller, board: Board, *, filename: str, format_rules: str,
-                    section: dict, payloads: str, coverage_lines: str,
-                    source_text_block: str, draft: str) -> str:
-    """Scoped coverage editor: repair one section chunk against exactly its
-    own items. Never sees or rewrites other sections."""
-    prompt = f"""You are the coverage editor for ONE SECTION of an expert work product. Compare the draft against its items and rewrite the COMPLETE section so every item-supported material fact survives.
+_BLOCKING_DEFECT_TYPES = frozenset({
+    "wrong_entity", "wrong_number", "wrong_date", "wrong_computation",
+    "wrong_attribution", "contradiction", "unsupported_assertion",
+    "unsupported_classification", "material_omission", "requirement_omission",
+    "coverage_omission", "citation_error", "internal_metadata_leak",
+})
+_ADVISORY_DEFECT_TYPES = frozenset({"other"})
+_ALL_DEFECT_TYPES = _BLOCKING_DEFECT_TYPES | _ADVISORY_DEFECT_TYPES
 
-FILE: {filename}
-{format_rules}
 
-SECTION: {section['title']}
-SECTION GUIDANCE: {section['guidance']}
+def _audit_section(caller, board, *, draft: str, payloads: str,
+                   source_text_block: str, scope_sha256: str,
+                   pass_name: str = "initial") -> dict | None:
+    prompt = f"""You are a factual accuracy auditor. Compare the DRAFT below against its ITEMS (the sole ground truth). Return a JSON object with structured findings.
 
-EDITORIAL RULES:
-- Preserve correct draft content, names, dates, amounts, citations, structure.
-- Do not invent outside the items. Exact numbers, dates, thresholds, parties, defined terms, and section names are high-risk facts — include them verbatim when material.
-- If the items contain a material fact the draft missed, add it in place; never append a generic note.
-{f'''- COVERAGE: {coverage_lines}''' if coverage_lines else ''}
-
-ITEMS (the exact population the draft was written from — atomic, never truncated):
+ITEMS (ground truth):
 {payloads}
 {source_text_block}
 
-DRAFT SECTION TO REPAIR:
-{draft[:_REPAIR_DRAFT_CAP]}
+DRAFT TO AUDIT:
+{draft}
 
-Return only the complete revised section. No commentary."""
-    return call_text(caller, board, prompt, kind="synthesis_repair",
-                     max_tokens=32768, temperature=0.15)
+Return JSON matching this schema exactly:
+{{
+  "schema_version": 1,
+  "scope_sha256": "{scope_sha256}",
+  "status": "complete",
+  "overflow": false,
+  "findings": [
+    {{
+      "finding_id": "f1",
+      "defect_type": "<one of: wrong_entity, wrong_number, wrong_date, wrong_computation, wrong_attribution, contradiction, unsupported_assertion, unsupported_classification, material_omission, requirement_omission, coverage_omission, citation_error, internal_metadata_leak, other>",
+      "impact": "blocking",
+      "draft_span": {{
+        "quote": "<exact text from draft that is wrong>",
+        "occurrence": 1
+      }},
+      "insertion_anchor": null,
+      "claim_ids": ["<ids from items>"],
+      "supported_correction": "<what the text should say based on items>",
+      "rationale": "<brief explanation>"
+    }}
+  ]
+}}
+
+Rules:
+- Only report defects provable from the items. Do not invent knowledge.
+- For omissions, set draft_span to null and insertion_anchor to the exact draft text AFTER which the fact should appear.
+- Set impact to "blocking" for wrong entities/numbers/dates/computations/attributions, contradictions, unsupported assertions/classifications, material/requirement/coverage omissions, citation errors, internal metadata leaks.
+- Set impact to "advisory" for style, tone, ordering, grammar, minor formatting, redundant citations, wording precision that changes no conclusion.
+- At most {_AUDIT_MAX_FINDINGS} findings. If more exist set overflow to true.
+- If the draft is correct return {{"schema_version": 1, "scope_sha256": "{scope_sha256}", "status": "complete", "overflow": false, "findings": []}}"""
+    return call_json(caller, board, prompt, kind=f"synthesis_audit_{pass_name}",
+                     max_tokens=_AUDIT_MAX_TOKENS, temperature=0.1)
+
+
+def _validate_audit(raw, *, draft: str, scope_sha256: str,
+                    item_ids: set[str]) -> tuple[dict | None, str | None]:
+    if raw is None or not isinstance(raw, dict):
+        return None, "parse_failure"
+    if raw.get("status") != "complete":
+        return None, f"incomplete_status:{raw.get('status')}"
+    if raw.get("overflow"):
+        return None, "overflow"
+    findings = raw.get("findings")
+    if not isinstance(findings, list):
+        return None, "findings_not_list"
+    if len(findings) > _AUDIT_MAX_FINDINGS:
+        return None, f"too_many_findings:{len(findings)}"
+    seen_ids: set[str] = set()
+    for f in findings:
+        if not isinstance(f, dict):
+            return None, "finding_not_dict"
+        fid = f.get("finding_id", "")
+        if not fid or fid in seen_ids:
+            return None, f"duplicate_or_missing_id:{fid}"
+        seen_ids.add(fid)
+        dt = f.get("defect_type")
+        if dt not in _ALL_DEFECT_TYPES:
+            return None, f"unknown_defect_type:{dt}"
+        span = f.get("draft_span")
+        anchor = f.get("insertion_anchor")
+        if span is not None:
+            quote = span.get("quote", "") if isinstance(span, dict) else ""
+            if quote and quote not in draft:
+                return None, f"span_not_in_draft:{quote[:60]}"
+        elif anchor is not None:
+            if isinstance(anchor, str) and anchor and anchor not in draft:
+                return None, f"anchor_not_in_draft:{anchor[:60]}"
+    return raw, None
+
+
+def _blocking_findings(audit: dict) -> list[dict]:
+    findings = audit.get("findings", [])
+    result = []
+    for f in findings:
+        dt = f.get("defect_type", "")
+        impact = f.get("impact", "")
+        if dt in _BLOCKING_DEFECT_TYPES or impact == "blocking":
+            result.append(f)
+    return result
+
+
+def _finding_context(chunk: list[dict], findings: list[dict]) -> str:
+    referenced_ids: set[str] = set()
+    for f in findings:
+        for cid in f.get("claim_ids", []):
+            referenced_ids.add(cid)
+    rows = []
+    for it in chunk:
+        for c in it.get("claims", []):
+            if c.id in referenced_ids:
+                rows.append({"id": c.id, "content": c.content[:_CONTENT_CAP],
+                             "evidence": c.evidence[:_EVIDENCE_CAP]})
+    return json.dumps(rows, ensure_ascii=False) if rows else "[]"
+
+
+def _correct_findings(caller, board, *, draft: str, findings: list[dict],
+                      finding_context: str, scope_sha256: str) -> dict | None:
+    findings_block = json.dumps(findings, ensure_ascii=False, indent=1)
+    prompt = f"""You are a precision editor. Apply ONLY the corrections below to the draft. Do not rewrite, rephrase, or reorganize anything else.
+
+FINDINGS TO CORRECT:
+{findings_block}
+
+RELEVANT ITEMS (ground truth for corrections):
+{finding_context}
+
+DRAFT:
+{draft}
+
+Return JSON with localized edit operations:
+{{
+  "schema_version": 1,
+  "scope_sha256": "{scope_sha256}",
+  "edits": [
+    {{
+      "finding_id": "f1",
+      "operation": "replace",
+      "match": "<exact text to find in draft>",
+      "occurrence": 1,
+      "replacement": "<corrected text>"
+    }}
+  ]
+}}
+
+Allowed operations: replace, delete, insert_before, insert_after.
+For insert_before/insert_after, "match" is the anchor text. For delete, omit "replacement".
+Every blocking finding MUST have a corresponding edit. Do not add edits for unreported findings.
+Matches must be exact substrings of the draft. Edits must not overlap."""
+    return call_json(caller, board, prompt, kind="synthesis_correction",
+                     max_tokens=_CORRECTION_MAX_TOKENS, temperature=0.1)
+
+
+def _apply_correction_edits(draft: str, raw, *, findings: list[dict],
+                            scope_sha256: str) -> tuple[str | None, str | None]:
+    if raw is None or not isinstance(raw, dict):
+        return None, "parse_failure"
+    edits = raw.get("edits")
+    if not isinstance(edits, list):
+        return None, "edits_not_list"
+    finding_ids = {f.get("finding_id") for f in findings}
+    addressed = set()
+    intervals: list[tuple[int, int, str, str]] = []
+
+    for e in edits:
+        if not isinstance(e, dict):
+            return None, "edit_not_dict"
+        fid = e.get("finding_id", "")
+        if fid not in finding_ids:
+            return None, f"unreported_finding:{fid}"
+        addressed.add(fid)
+        op = e.get("operation", "replace")
+        match_text = e.get("match", "")
+        if not match_text:
+            return None, f"empty_match:{fid}"
+        occ = max(1, int(e.get("occurrence", 1)))
+        replacement = e.get("replacement", "")
+
+        idx = -1
+        search_from = 0
+        for _ in range(occ):
+            idx = draft.find(match_text, search_from)
+            if idx == -1:
+                return None, f"match_not_found:{match_text[:60]}"
+            search_from = idx + 1
+
+        if op == "replace":
+            intervals.append((idx, idx + len(match_text), replacement, fid))
+        elif op == "delete":
+            intervals.append((idx, idx + len(match_text), "", fid))
+        elif op == "insert_before":
+            intervals.append((idx, idx, replacement, fid))
+        elif op == "insert_after":
+            end = idx + len(match_text)
+            intervals.append((end, end, replacement, fid))
+        else:
+            return None, f"unknown_op:{op}"
+
+    missing = finding_ids - addressed
+    if missing:
+        return None, f"unaddressed_findings:{','.join(sorted(missing))}"
+
+    intervals.sort(key=lambda x: x[0])
+    for i in range(1, len(intervals)):
+        if intervals[i][0] < intervals[i - 1][1]:
+            return None, (f"overlapping_edits:{intervals[i-1][3]}"
+                          f"/{intervals[i][3]}")
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end, repl, _fid in intervals:
+        parts.append(draft[cursor:start])
+        parts.append(repl)
+        cursor = end
+    parts.append(draft[cursor:])
+    result = "".join(parts)
+    if not result.strip():
+        return None, "empty_result"
+    return result, None
+
+
+def _degrade_unresolved(draft: str, *, filename: str, section_title: str,
+                        findings: list[dict] | None,
+                        reason: str) -> str:
+    if findings:
+        result = draft
+        for f in sorted(findings,
+                        key=lambda x: draft.find(
+                            (x.get("draft_span") or {}).get("quote", "")
+                        ), reverse=True):
+            span = f.get("draft_span")
+            if not span or not isinstance(span, dict):
+                continue
+            quote = span.get("quote", "")
+            if quote and quote in result:
+                result = result.replace(
+                    quote,
+                    "[This content could not be verified and has been withheld"
+                    " for accuracy.]",
+                    1,
+                )
+        if result != draft:
+            return result
+    is_xlsx = filename.lower().endswith(".xlsx")
+    if is_xlsx:
+        return (f"[Verification limitation: this section's content could not "
+                f"be verified against source materials. Reason: {reason}]")
+    return (f"[Verification limitation for \"{section_title}\": this section's "
+            f"content could not be verified against source materials. "
+            f"Reason: {reason}]")
 
 
 def _assemble_sections(filename: str, section_outputs: list[tuple[str, list[str]]],
@@ -911,17 +1268,6 @@ def _dump_assembly(board: Board, filename: str, manifest: dict) -> None:
     except OSError:
         pass
 
-
-def _usable_repair(draft: str, repaired: str | None) -> bool:
-    """Reject parse failures and obvious truncation from the repair pass."""
-    if not repaired:
-        return False
-    cleaned = repaired.strip()
-    if not cleaned:
-        return False
-    if len(draft) < 1200:
-        return len(cleaned) >= len(draft) * 0.5
-    return len(cleaned) >= max(1200, int(len(draft) * 0.6))
 
 
 def _dump_packets(board: Board, filename: str, packet_blocks) -> None:

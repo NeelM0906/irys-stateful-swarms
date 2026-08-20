@@ -25,7 +25,8 @@ class _FakeResult:
 
 class _EchoCaller:
     """Returns a deterministic marker embedding the section title and the
-    claim ids present in the prompt, so tests can verify scoping."""
+    claim ids present in the prompt, so tests can verify scoping.
+    Also returns valid clean-audit JSON for verification barrier prompts."""
 
     def __init__(self, empty_for: tuple = ()):
         self.prompts = []
@@ -33,6 +34,16 @@ class _EchoCaller:
 
     def complete(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        if "factual accuracy auditor" in prompt:
+            import re as _re
+            m = _re.search(r'"scope_sha256":\s*"([a-f0-9]+)"', prompt)
+            sha = m.group(1) if m else ""
+            return _FakeResult(text=json.dumps({
+                "schema_version": 1, "scope_sha256": sha,
+                "status": "complete", "overflow": False, "findings": [],
+            }))
+        if "precision editor" in prompt:
+            return _FakeResult(text='{"schema_version":1,"edits":[]}')
         section = ""
         for line in prompt.splitlines():
             if line.startswith("SECTION: "):
@@ -99,7 +110,8 @@ def test_single_section_file_single_call():
     board = _make_board()
     caller = _EchoCaller()
     out = synthesize(caller, board, _plan(two_sections=False))
-    drafts = [p for p in caller.prompts if "coverage editor" not in p]
+    drafts = [p for p in caller.prompts if "SECTION:" in p
+              and "factual accuracy auditor" not in p]
     assert len(drafts) == 1
     assert "## Alpha" in out["output.docx"]
 
@@ -285,19 +297,14 @@ def test_requirements_visible_in_every_section_call():
 
 # --- 11. scoped repair -------------------------------------------------------------------
 
-def test_repair_scoped_to_single_section(monkeypatch):
-    monkeypatch.setenv("LOOP_SYNTHESIS_REPAIR", "1")
-    import importlib
-    import src.loop.synthesis as syn
-    importlib.reload(syn)
+def test_audit_scoped_to_single_section():
     board = _make_board()
     caller = _EchoCaller()
-    syn.synthesize(caller, board, _plan())
-    repair_prompts = [p for p in caller.prompts if "coverage editor" in p]
-    assert repair_prompts
-    for p in repair_prompts:
+    synthesize(caller, board, _plan())
+    audit_prompts = [p for p in caller.prompts if "factual accuracy auditor" in p]
+    assert audit_prompts
+    for p in audit_prompts:
         assert not ("c100" in p and "c200" in p)  # never both sections
-    importlib.reload(syn)
 
 
 # --- 12. deterministic assembly -------------------------------------------------------------
@@ -329,17 +336,14 @@ def test_assembly_appends_deterministic_limitations():
 
 # --- reviewer round-1 gap tests -----------------------------------------------------------
 
-def test_repair_receives_complete_untruncated_payload():
+def test_audit_receives_complete_untruncated_payload():
     board = _make_board(n_claims_t0=5, n_claims_t1=0)
     caller = _EchoCaller()
     synthesize(caller, board, _plan(two_sections=False))
-    repair_prompts = [p for p in caller.prompts if "coverage editor" in p]
-    assert repair_prompts
-    # the LAST claim item (tail object) must be present whole in the repair
-    for p in repair_prompts:
-        assert '"c104"' in p  # tail claim id survives, no prefix slicing
-        # every payload object in the repair prompt round-trips
-        assert "never truncated" in p
+    audit_prompts = [p for p in caller.prompts if "factual accuracy auditor" in p]
+    assert audit_prompts
+    for p in audit_prompts:
+        assert '"c104"' in p
 
 
 def test_intra_target_split_when_claims_exceed_cap():
