@@ -294,7 +294,6 @@ def test_requirements_visible_in_every_section_call():
 def test_repair_scoped_to_single_section(monkeypatch):
     import src.loop.synthesis as syn
     monkeypatch.setattr(syn, "_REPAIR_ENABLED", True)
-    monkeypatch.setattr(syn, "_VERIFICATION_ENABLED", False)
     board = _make_board()
     caller = _EchoCaller()
     syn.synthesize(caller, board, _plan())
@@ -336,7 +335,6 @@ def test_assembly_appends_deterministic_limitations():
 def test_repair_receives_complete_untruncated_payload(monkeypatch):
     import src.loop.synthesis as syn
     monkeypatch.setattr(syn, "_REPAIR_ENABLED", True)
-    monkeypatch.setattr(syn, "_VERIFICATION_ENABLED", False)
     board = _make_board(n_claims_t0=5, n_claims_t1=0)
     caller = _EchoCaller()
     syn.synthesize(caller, board, _plan(two_sections=False))
