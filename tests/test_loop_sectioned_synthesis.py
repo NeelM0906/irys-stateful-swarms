@@ -17,9 +17,9 @@ class _FakeDoc:
 @dataclass
 class _FakeResult:
     text: str = ""
-    tokens_input: int = 100
-    tokens_output: int = 50
-    tokens_total: int = 150
+    tokens_input: int = 5000
+    tokens_output: int = 1000
+    tokens_total: int = 6000
     model: str = "fake"
 
 
@@ -336,10 +336,15 @@ def test_assembly_appends_deterministic_limitations():
 
 # --- reviewer round-1 gap tests -----------------------------------------------------------
 
-def test_repair_receives_complete_untruncated_payload():
+def test_repair_receives_complete_untruncated_payload(monkeypatch):
+    monkeypatch.setenv("LOOP_SYNTHESIS_REPAIR", "1")
+    monkeypatch.setenv("LOOP_SYNTHESIS_VERIFY", "0")
+    import importlib
+    import src.loop.synthesis as syn
+    importlib.reload(syn)
     board = _make_board(n_claims_t0=5, n_claims_t1=0)
     caller = _EchoCaller()
-    synthesize(caller, board, _plan(two_sections=False))
+    syn.synthesize(caller, board, _plan(two_sections=False))
     repair_prompts = [p for p in caller.prompts if "coverage editor" in p]
     assert repair_prompts
     # the LAST claim item (tail object) must be present whole in the repair
@@ -347,6 +352,7 @@ def test_repair_receives_complete_untruncated_payload():
         assert '"c104"' in p  # tail claim id survives, no prefix slicing
         # every payload object in the repair prompt round-trips
         assert "never truncated" in p
+    importlib.reload(syn)
 
 
 def test_intra_target_split_when_claims_exceed_cap():

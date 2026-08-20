@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from src.loop.synthesis import (
     VerificationLedger, _validate_audit, _blocking_findings,
     _validate_correction, _apply_edits, _verify_chunk, _withhold_text,
-    _VERIFICATION_BUDGET_RATIO,
+    _VERIFICATION_BUDGET_RATIO, _VERIFY_CALL_RESERVE,
 )
 from src.loop.state import Board, Claim, Source, Target
 
@@ -76,6 +76,24 @@ def test_ledger_exhaustion():
     ledger.add_draft_tokens(1000, 0)
     budget = ledger.budget  # 150
     ledger.charge(budget, 0)
+    assert ledger.can_reserve() is False
+
+def test_ledger_reserve_requires_minimum():
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(2000, 0)
+    budget = ledger.budget  # 300
+    assert budget < _VERIFY_CALL_RESERVE
+    assert ledger.can_reserve() is False
+
+def test_ledger_reserve_sufficient():
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(20000, 0)
+    budget = ledger.budget  # 3000
+    assert budget >= _VERIFY_CALL_RESERVE
+    assert ledger.can_reserve() is True
+    ledger.charge(budget - _VERIFY_CALL_RESERVE, 0)
+    assert ledger.can_reserve() is True
+    ledger.charge(1, 0)
     assert ledger.can_reserve() is False
 
 def test_ledger_summary():
@@ -151,6 +169,37 @@ def test_validate_audit_non_omission_requires_span():
     ]}
     assert _validate_audit(audit, []) is False
 
+def test_validate_audit_rejects_missing_explanation():
+    audit = {"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": "wrong"},
+    ]}
+    assert _validate_audit(audit, []) is False
+
+def test_validate_audit_rejects_empty_explanation():
+    audit = {"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": "wrong", "explanation": ""},
+    ]}
+    assert _validate_audit(audit, []) is False
+
+def test_validate_audit_rejects_non_string_fields():
+    audit = {"findings": [
+        {"id": 1, "defect": "factual_error", "severity": "blocking",
+         "span": "x", "explanation": "y"},
+    ]}
+    assert _validate_audit(audit, []) is False
+    audit2 = {"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": 123, "explanation": "y"},
+    ]}
+    assert _validate_audit(audit2, []) is False
+    audit3 = {"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": "x", "explanation": 999},
+    ]}
+    assert _validate_audit(audit3, []) is False
+
 
 # --- 3. Blocking findings ---------------------------------------------------
 
@@ -194,6 +243,20 @@ def test_validate_correction_delete_no_replacement():
         {"finding_id": "f1", "operation": "delete", "span": "remove this"},
     ]}
     assert _validate_correction(corr, {"f1"}) is True
+
+def test_validate_correction_rejects_non_string_span():
+    corr = {"edits": [
+        {"finding_id": "f1", "operation": "replace",
+         "span": 123, "replacement": "right"},
+    ]}
+    assert _validate_correction(corr, {"f1"}) is False
+
+def test_validate_correction_rejects_non_string_replacement():
+    corr = {"edits": [
+        {"finding_id": "f1", "operation": "replace",
+         "span": "wrong", "replacement": 456},
+    ]}
+    assert _validate_correction(corr, {"f1"}) is False
 
 
 # --- 5. Apply edits --------------------------------------------------------
@@ -440,3 +503,121 @@ def test_advisory_only_passes_clean():
     )
     assert text == "The fact is alpha."
     assert record["status"] == "audit_clean"
+
+
+# --- 10. Timing records present in every path --------------------------------
+
+def test_verify_chunk_records_timing():
+    board = _make_board()
+    board.add_tokens(10000, 2000, "fake")
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(10000, 2000)
+    caller = _MockCaller(['{"findings": []}'])
+
+    _, record = _verify_chunk(
+        caller, board, ledger,
+        draft="Content.", payloads="claim c100: fact alpha",
+        claim_ids=["c100"], section_title="Analysis",
+        filename="output.docx", is_xlsx=False,
+    )
+    assert "timing_ms" in record
+    assert isinstance(record["timing_ms"], int)
+    assert record["timing_ms"] >= 0
+
+
+def test_verify_chunk_budget_exhausted_records_timing():
+    board = _make_board()
+    ledger = VerificationLedger()
+
+    _, record = _verify_chunk(
+        _MockCaller(), board, ledger,
+        draft="Content.", payloads="claim c100: fact alpha",
+        claim_ids=["c100"], section_title="Analysis",
+        filename="output.docx", is_xlsx=False,
+    )
+    assert record["status"] == "budget_exhausted"
+    assert "timing_ms" in record
+
+
+# --- 11. Budget reserve prevents undersized dispatch -------------------------
+
+def test_verify_chunk_small_budget_withholds():
+    """Budget < _VERIFY_CALL_RESERVE prevents audit dispatch."""
+    board = _make_board()
+    board.add_tokens(100, 50, "fake")
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(100, 50)
+    assert ledger.budget < _VERIFY_CALL_RESERVE
+
+    text, record = _verify_chunk(
+        _MockCaller(), board, ledger,
+        draft="Some content.", payloads="claim c100: fact alpha",
+        claim_ids=["c100"], section_title="Analysis",
+        filename="output.docx", is_xlsx=False,
+    )
+    assert "Verification limitation" in text
+    assert record["status"] == "budget_exhausted"
+    assert ledger.chunks_withheld == 1
+
+
+# --- 12. Exception safety in apply_edits ------------------------------------
+
+def test_verify_chunk_edit_span_mismatch_withholds():
+    """Correction with non-matching span withholds the chunk."""
+    board = _make_board()
+    board.add_tokens(10000, 2000, "fake")
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(10000, 2000)
+
+    audit_resp = json.dumps({"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": "wrong", "explanation": "should be right"},
+    ]})
+    correction_resp = json.dumps({"edits": [
+        {"finding_id": "f1", "operation": "replace",
+         "span": "nonexistent", "replacement": "right"},
+    ]})
+
+    caller = _MockCaller([audit_resp, correction_resp])
+
+    text, record = _verify_chunk(
+        caller, board, ledger,
+        draft="The wrong fact here.", payloads="claim c100: fact alpha",
+        claim_ids=["c100"], section_title="Analysis",
+        filename="output.docx", is_xlsx=False,
+    )
+    assert "Verification limitation" in text
+    assert record["status"] == "edit_failed"
+
+
+# --- 13. Corrected path persists final_findings and pre_barrier_draft --------
+
+def test_verify_chunk_corrected_has_final_findings():
+    board = _make_board()
+    board.add_tokens(10000, 2000, "fake")
+    ledger = VerificationLedger()
+    ledger.add_draft_tokens(10000, 2000)
+
+    audit_resp = json.dumps({"findings": [
+        {"id": "f1", "defect": "factual_error", "severity": "blocking",
+         "span": "beta", "explanation": "should be alpha"},
+    ]})
+    correction_resp = json.dumps({"edits": [
+        {"finding_id": "f1", "operation": "replace",
+         "span": "beta", "replacement": "alpha"},
+    ]})
+    reaudit_resp = '{"findings": []}'
+
+    caller = _MockCaller([audit_resp, correction_resp, reaudit_resp])
+
+    _, record = _verify_chunk(
+        caller, board, ledger,
+        draft="The answer is beta.", payloads="claim c100: fact alpha",
+        claim_ids=["c100"], section_title="Analysis",
+        filename="output.docx", is_xlsx=False,
+    )
+    assert record["status"] == "corrected"
+    assert "final_findings" in record
+    assert record["final_findings"] == []
+    assert "pre_barrier_draft" in record
+    assert record["pre_barrier_draft"] == "The answer is beta."

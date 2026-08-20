@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 from .hydration import build_evidence_context
@@ -31,6 +32,8 @@ _VERIFICATION_ENABLED = os.getenv("LOOP_SYNTHESIS_VERIFY", "1").strip() in (
 )
 _VERIFICATION_BUDGET_RATIO = 0.15
 _AUDIT_MAX_FINDINGS = 12
+_VERIFY_CALL_RESERVE = 500
+
 class VerificationLedger:
     """Task-level budget for all verification calls (audit + correction + re-audit).
 
@@ -57,7 +60,7 @@ class VerificationLedger:
         self.draft_tokens += input_tokens + output_tokens
 
     def can_reserve(self) -> bool:
-        return self.spent < self.budget
+        return self.budget - self.spent >= _VERIFY_CALL_RESERVE
 
     def charge(self, input_tokens: int, output_tokens: int) -> None:
         self.spent += input_tokens + output_tokens
@@ -665,9 +668,7 @@ Write ONLY this section's content (no document title, no other sections, no meta
             is_xlsx=is_xlsx,
         )
         manifest["verify"] = v_record.get("status", "unknown")
-        manifest["verify_record"] = {
-            k: v for k, v in v_record.items() if k != "pre_barrier_draft"
-        }
+        manifest["verify_record"] = v_record
         text = verified
     elif text and _REPAIR_ENABLED:
         try:
@@ -788,12 +789,11 @@ def _validate_audit(audit: dict, claim_ids: list[str]) -> bool:
     if len(findings) > _AUDIT_MAX_FINDINGS:
         return False
     seen_ids: set[str] = set()
-    claim_id_set = set(claim_ids)
     for f in findings:
         if not isinstance(f, dict):
             return False
         fid = f.get("id", "")
-        if not fid or fid in seen_ids:
+        if not fid or not isinstance(fid, str) or fid in seen_ids:
             return False
         seen_ids.add(fid)
         if f.get("defect") not in (
@@ -804,7 +804,12 @@ def _validate_audit(audit: dict, claim_ids: list[str]) -> bool:
         if f.get("severity") not in ("blocking", "advisory"):
             return False
         span = f.get("span", "")
+        if not isinstance(span, str):
+            return False
         if f.get("defect") != "omission" and not span:
+            return False
+        explanation = f.get("explanation", "")
+        if not isinstance(explanation, str) or not explanation:
             return False
     return True
 
@@ -827,7 +832,13 @@ def _validate_correction(correction: dict, blocking_ids: set[str]) -> bool:
             return False
         if e.get("finding_id") not in blocking_ids:
             return False
-        if e.get("operation") != "delete" and not e.get("replacement"):
+        span = e.get("span", "")
+        if not isinstance(span, str):
+            return False
+        replacement = e.get("replacement", "")
+        if not isinstance(replacement, str):
+            return False
+        if e.get("operation") != "delete" and not replacement:
             return False
     return True
 
@@ -887,10 +898,12 @@ def _verify_chunk(
     final_text is either the original draft (clean), corrected text, or
     a withhold placeholder.
     """
+    t0 = time.monotonic()
     record: dict = {"status": "skipped", "pre_barrier_draft": draft}
 
     if not ledger.can_reserve():
         record["status"] = "budget_exhausted"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -899,10 +912,10 @@ def _verify_chunk(
     audit_prompt = f"""You are a factual auditor. Compare the DRAFT against its ITEMS and report defects.
 
 ITEMS (the sole source of truth — everything the draft should contain):
-{payloads[:_REPAIR_DRAFT_CAP]}
+{payloads}
 
 DRAFT TO AUDIT:
-{draft[:_REPAIR_DRAFT_CAP]}
+{draft}
 
 Report up to {_AUDIT_MAX_FINDINGS} findings. Each finding must have:
 - id: unique string (f1, f2, ...)
@@ -919,6 +932,7 @@ If the draft is faithful to its items, return {{"findings": []}}."""
                           max_tokens=4096, temperature=0.0)
     except Exception:
         record["status"] = "audit_raised"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -929,6 +943,7 @@ If the draft is faithful to its items, return {{"findings": []}}."""
 
     if not _validate_audit(audit, claim_ids):
         record["status"] = "audit_invalid"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -938,11 +953,13 @@ If the draft is faithful to its items, return {{"findings": []}}."""
 
     if not blockers:
         record["status"] = "audit_clean"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_clean += 1
         return draft, record
 
     if not ledger.can_reserve():
         record["status"] = "budget_exhausted"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -958,10 +975,10 @@ BLOCKING DEFECTS:
 {blocker_text}
 
 ITEMS (source of truth):
-{payloads[:_REPAIR_DRAFT_CAP]}
+{payloads}
 
 DRAFT:
-{draft[:_REPAIR_DRAFT_CAP]}
+{draft}
 
 For each blocking defect, produce one edit:
 - finding_id: the defect id
@@ -978,6 +995,7 @@ Return {{"edits": [...]}}. Fix ONLY the blocking defects — do not rewrite othe
                                temperature=0.0)
     except Exception:
         record["status"] = "correct_raised"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -988,27 +1006,33 @@ Return {{"edits": [...]}}. Fix ONLY the blocking defects — do not rewrite othe
 
     if not _validate_correction(correction, blocking_ids):
         record["status"] = "correct_invalid"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
-    corrected = _apply_edits(draft, correction.get("edits", []))
+    try:
+        corrected = _apply_edits(draft, correction.get("edits", []))
+    except Exception:
+        corrected = None
     if corrected is None:
         record["status"] = "edit_failed"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
     if not ledger.can_reserve():
         record["status"] = "budget_exhausted"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
     reaudit_prompt = f"""You are a factual auditor performing a re-audit after corrections. Compare the CORRECTED DRAFT against its ITEMS.
 
 ITEMS (sole source of truth):
-{payloads[:_REPAIR_DRAFT_CAP]}
+{payloads}
 
 CORRECTED DRAFT:
-{corrected[:_REPAIR_DRAFT_CAP]}
+{corrected}
 
 Report any remaining defects using the same format. If all blocking defects are resolved, return {{"findings": []}}."""
 
@@ -1019,6 +1043,7 @@ Report any remaining defects using the same format. If all blocking defects are 
                             temperature=0.0)
     except Exception:
         record["status"] = "reaudit_raised"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -1026,9 +1051,11 @@ Report any remaining defects using the same format. If all blocking defects are 
     reaudit_out = board.tokens_output - tout0
     ledger.charge(reaudit_in, reaudit_out)
     record["reaudit_tokens"] = {"input": reaudit_in, "output": reaudit_out}
+    record["final_findings"] = reaudit.get("findings", [])
 
     if not _validate_audit(reaudit, claim_ids):
         record["status"] = "reaudit_invalid"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
@@ -1037,10 +1064,12 @@ Report any remaining defects using the same format. If all blocking defects are 
 
     if reaudit_blockers:
         record["status"] = "reaudit_blockers"
+        record["timing_ms"] = int((time.monotonic() - t0) * 1000)
         ledger.chunks_withheld += 1
         return _withhold_text(section_title, is_xlsx), record
 
     record["status"] = "corrected"
+    record["timing_ms"] = int((time.monotonic() - t0) * 1000)
     ledger.chunks_corrected += 1
     return corrected, record
 
