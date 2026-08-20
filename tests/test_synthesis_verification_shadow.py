@@ -207,6 +207,7 @@ class TestValidateVerificationAudit:
             "finding_id": "f1",
             "defect_type": "factual_error",
             "scope_id": "target:t1",
+            "description": "wrong amount",
             "impact": "blocking",
             "operation": "replace",
             "match": "$5 million",
@@ -257,6 +258,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": "nonexistent text",
                              "replacement": "x"}]}
@@ -267,6 +269,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": "", "replacement": "x"}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
@@ -276,6 +279,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": "$5 million", "replacement": ""}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
@@ -285,6 +289,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "unsupported_claim",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "delete",
                              "match": " in revenue"}]}
         findings, err = syn._validate_verification_audit(
@@ -305,6 +310,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": "$5 million",
                              "replacement": "$6 million"}]}
@@ -314,7 +320,8 @@ class TestValidateVerificationAudit:
     def test_duplicate_finding_id_rejected(self):
         raw = {"findings": [
             {"finding_id": "f1", "defect_type": "factual_error",
-             "scope_id": "target:t1", "operation": "replace",
+             "scope_id": "target:t1", "description": "d",
+             "impact": "blocking", "operation": "replace",
              "match": "$5 million", "replacement": "$6 million"},
             {"finding_id": "f1", "defect_type": "numerical_error",
              "scope_id": "target:t1", "operation": "delete",
@@ -327,6 +334,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "insert_after",
                              "match": "$5 million"}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
@@ -356,6 +364,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": 123,
                              "replacement": "$6 million"}]}
@@ -367,6 +376,7 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "replace",
                              "match": "11",
                              "replacement": "22"}]}
@@ -378,12 +388,13 @@ class TestValidateVerificationAudit:
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "factual_error",
                              "scope_id": "target:t1",
+                             "description": "wrong amount",
                              "operation": "replace",
                              "match": "$5 million",
                              "replacement": "$6 million",
                              "impact": 42}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
-        assert "invalid_impact" in err
+        assert "missing_impact" in err
 
     def test_non_string_description_rejected(self):
         raw = {"findings": [{"finding_id": "f1",
@@ -394,17 +405,40 @@ class TestValidateVerificationAudit:
                              "replacement": "$6 million",
                              "description": {"nested": True}}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
-        assert "invalid_description" in err
+        assert "missing_description" in err
 
     def test_delete_non_string_replacement_rejected(self):
         raw = {"findings": [{"finding_id": "f1",
                              "defect_type": "unsupported_claim",
                              "scope_id": "target:t1",
+                             "description": "d", "impact": "blocking",
                              "operation": "delete",
                              "match": " in revenue",
                              "replacement": {"bad": True}}]}
         _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
         assert "invalid_delete_replacement" in err
+
+    def test_missing_description_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "impact": "blocking",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "missing_description" in err
+
+    def test_missing_impact_rejected(self):
+        raw = {"findings": [{"finding_id": "f1",
+                             "defect_type": "factual_error",
+                             "scope_id": "target:t1",
+                             "description": "wrong amount",
+                             "operation": "replace",
+                             "match": "$5 million",
+                             "replacement": "$6 million"}]}
+        _, err = syn._validate_verification_audit(raw, self.SCOPES, self.DRAFT)
+        assert "missing_impact" in err
 
 
 # ---------------------------------------------------------------------------
@@ -530,8 +564,8 @@ class TestShadowVerifyChunk:
     def test_corrected_audit(self, monkeypatch):
         audit_response = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace", "match": "$5M",
+            "scope_id": "target:t1", "description": "wrong amount",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
             "replacement": "$6M",
         }]}
         re_audit_response = {"findings": []}
@@ -573,14 +607,14 @@ class TestShadowVerifyChunk:
     def test_residual_blockers(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace", "match": "$5M",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
             "replacement": "$6M",
         }]}
         re_audit = {"findings": [{
             "finding_id": "f2", "defect_type": "numerical_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace", "match": "$6M",
+            "scope_id": "target:t1", "description": "still wrong",
+            "impact": "blocking", "operation": "replace", "match": "$6M",
             "replacement": "$7M",
         }]}
         self._patch_call_json(monkeypatch, [audit, re_audit])
@@ -616,8 +650,8 @@ class TestShadowVerifyChunk:
     def test_advisory_only_is_clean(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "missing_nuance",
-            "scope_id": "target:t1", "impact": "advisory",
-            "operation": "replace", "match": "earned",
+            "scope_id": "target:t1", "description": "imprecise",
+            "impact": "advisory", "operation": "replace", "match": "earned",
             "replacement": "reportedly earned",
         }]}
         self._patch_call_json(monkeypatch, [audit])
@@ -633,14 +667,14 @@ class TestShadowVerifyChunk:
     def test_edit_failure_falls_to_failed(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace",
             "match": "$5M",
             "replacement": "$6M",
         }, {
             "finding_id": "f2", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace",
+            "scope_id": "target:t1", "description": "also wrong",
+            "impact": "blocking", "operation": "replace",
             "match": "$5M in",
             "replacement": "$7M in",
         }]}
@@ -657,8 +691,8 @@ class TestShadowVerifyChunk:
     def test_re_audit_error(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace", "match": "$5M",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
             "replacement": "$6M",
         }]}
         self._patch_call_json(monkeypatch,
@@ -732,8 +766,8 @@ class TestShadowVerifyChunk:
     def test_requirement_scoped_finding_not_blocking(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "requirement:r1", "impact": "blocking",
-            "operation": "replace", "match": "$5M",
+            "scope_id": "requirement:r1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
             "replacement": "$6M",
         }]}
         self._patch_call_json(monkeypatch, [audit])
@@ -749,14 +783,14 @@ class TestShadowVerifyChunk:
     def test_edit_failure_has_control_fallback(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace",
             "match": "$5M",
             "replacement": "$6M",
         }, {
             "finding_id": "f2", "defect_type": "factual_error",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace",
+            "scope_id": "target:t1", "description": "also wrong",
+            "impact": "blocking", "operation": "replace",
             "match": "$5M in",
             "replacement": "$7M in",
         }]}
@@ -773,8 +807,8 @@ class TestShadowVerifyChunk:
     def test_impact_blocking_alone_not_sufficient(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "imprecise_language",
-            "scope_id": "target:t1", "impact": "blocking",
-            "operation": "replace", "match": "earned",
+            "scope_id": "target:t1", "description": "imprecise",
+            "impact": "blocking", "operation": "replace", "match": "earned",
             "replacement": "reportedly earned",
         }]}
         self._patch_call_json(monkeypatch, [audit])
@@ -829,6 +863,29 @@ class TestShadowIntegration:
     def test_shadow_enabled_flag(self, monkeypatch):
         monkeypatch.setattr(syn, "_VERIFICATION_SHADOW", True)
         assert syn._VERIFICATION_SHADOW is True
+
+    def test_empty_draft_records_skipped_in_ledger(self, monkeypatch):
+        monkeypatch.setattr(syn, "_VERIFICATION_SHADOW", True)
+        monkeypatch.setattr(syn, "_REPAIR_ENABLED", False)
+        monkeypatch.setattr(syn, "call_text",
+                            lambda *a, **kw: "   ")
+        board = FakeBoard()
+        board.instruction = "request"
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        text, manifest = syn._synthesize_section(
+            None, None, board, filename="out.docx", file_form="document",
+            format_rules="", section={"title": "S", "guidance": ""},
+            chunk=chunk, chunk_index=0, chunk_count=1,
+            verification_ledger=ledger)
+        assert len(ledger.entries) == 1
+        entry = ledger.entries[0]
+        assert entry["status"] == "skipped"
+        assert entry["reason"] == "empty_draft"
+        assert entry["filename"] == "out.docx"
+        assert entry["section_title"] == "S"
+        assert entry["scope_ids"] == []
+        assert "verification_shadow" in manifest
 
 
 # ---------------------------------------------------------------------------

@@ -626,25 +626,36 @@ Write ONLY this section's content (no document title, no other sections, no meta
         else:
             manifest["repair"] = "discarded"
 
-    if _VERIFICATION_SHADOW and verification_ledger is not None and text.strip():
-        try:
-            shadow = _shadow_verify_chunk(
-                caller, board, draft=text, chunk=chunk,
-                filename=filename, section_title=section["title"],
-                chunk_index=chunk_index, ledger=verification_ledger,
-            )
-        except Exception:
-            shadow = {"status": "failed",
-                      "reason": "exception_containment",
+    if _VERIFICATION_SHADOW and verification_ledger is not None:
+        if not text.strip():
+            shadow = {"status": "skipped",
+                      "reason": "empty_draft",
                       "control_hash": hashlib.sha256(
                           text.encode("utf-8")).hexdigest(),
-                      "control_fallback": True,
-                      "activation_eligible": False,
                       "filename": filename,
                       "section_title": section["title"],
                       "chunk_index": chunk_index,
                       "scope_ids": []}
             verification_ledger.record(shadow)
+        else:
+            try:
+                shadow = _shadow_verify_chunk(
+                    caller, board, draft=text, chunk=chunk,
+                    filename=filename, section_title=section["title"],
+                    chunk_index=chunk_index, ledger=verification_ledger,
+                )
+            except Exception:
+                shadow = {"status": "failed",
+                          "reason": "exception_containment",
+                          "control_hash": hashlib.sha256(
+                              text.encode("utf-8")).hexdigest(),
+                          "control_fallback": True,
+                          "activation_eligible": False,
+                          "filename": filename,
+                          "section_title": section["title"],
+                          "chunk_index": chunk_index,
+                          "scope_ids": []}
+                verification_ledger.record(shadow)
         manifest["verification_shadow"] = shadow
 
     manifest["tokens_in"] = board.tokens_input - tin0
@@ -1123,11 +1134,11 @@ def _validate_verification_audit(raw, valid_scopes: set[str],
                                                   "insert_after"):
             return None, f"invalid_op:{op}"
         desc = f.get("description")
-        if desc is not None and not isinstance(desc, str):
-            return None, f"invalid_description:{fid}"
+        if not isinstance(desc, str) or not desc:
+            return None, f"missing_description:{fid}"
         impact = f.get("impact")
-        if impact is not None and not isinstance(impact, str):
-            return None, f"invalid_impact:{fid}"
+        if not isinstance(impact, str) or not impact:
+            return None, f"missing_impact:{fid}"
         match = f.get("match")
         if not isinstance(match, str) or not match:
             return None, f"empty_match:{fid}"
