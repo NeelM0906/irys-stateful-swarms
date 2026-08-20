@@ -393,6 +393,12 @@ def _chunk_section_items(items: list[dict], char_cap: int,
     per-call governing context prepended to EVERY chunk, and their length is
     charged against each chunk's cap. Only a genuinely indivisible single
     item (or the requirement preamble itself) may exceed the cap."""
+class EmptyAssemblyError(RuntimeError):
+    """Every section of a required deliverable produced no synthesized body.
+    A structurally empty assembly must fail loudly — it is never represented
+    as a completed work product."""
+
+
 class ChunkCapacityError(ValueError):
     """The governing requirement preamble plus one bounded item cannot fit
     the per-call ceiling — a structural failure, never an over-cap call.
@@ -849,6 +855,23 @@ def synthesize(smart_caller, board: Board, plan: dict,
                 f"{filename}: plan produced no renderable sections",
                 detail={"filename": filename, "reason": "empty_plan"},
             )
+        # Failure-honesty guard: a deliverable whose every section produced no
+        # synthesized body is a failed task, never a completed one. The
+        # assembly evidence is already persisted by the finally above; fail
+        # loudly so no `completed` status can be written. Score-neutral: this
+        # path cannot trigger when any section produced content.
+        if not any(t.strip() for _title, texts in section_outputs
+                   for t in texts):
+            board.log(
+                "assembly_failure",
+                f"{filename}: every section empty — refusing to represent an "
+                "empty assembly as a completed deliverable",
+                detail={"filename": filename, "reason": "all_sections_empty",
+                        "sections": [t for t, _ in section_outputs]},
+            )
+            raise EmptyAssemblyError(
+                f"{filename}: all {len(section_outputs)} sections produced "
+                "no synthesized content")
         final = _assemble_sections(filename, section_outputs, residual_note)
         results[filename] = final or "(synthesis produced no content)"
         board.log(

@@ -603,12 +603,44 @@ def test_requirement_referenced_by_unit_not_duplicated_in_call(tmp_path):
                     '"requirement"' in payload
 
 
-def test_empty_plan_logs_assembly_failure():
+def test_all_empty_sections_raise_instead_of_completing(tmp_path):
+    # The severity-one case: every section empty must FAIL the task loudly,
+    # never ship placeholders stamped completed.
+    import pytest as _pytest
+    from src.loop.synthesis import EmptyAssemblyError
+    board = _make_board()
+    board.output_dir = str(tmp_path)
+    caller = _EchoCaller(empty_for=("Alpha", "Beta"))
+    with _pytest.raises(EmptyAssemblyError):
+        synthesize(caller, board, _plan())
+    # evidence persisted before the raise
+    manifest = json.loads(
+        (tmp_path / "loop" / "assembly_output.docx.json").read_text(
+            encoding="utf-8"))
+    assert len(manifest["sections"]) == 2
+    fails = [e for e in board.events if e.kind == "assembly_failure"
+             and e.detail.get("reason") == "all_sections_empty"]
+    assert fails
+
+
+def test_one_nonempty_section_still_completes():
+    # Score-neutral: any real content means the guard never triggers.
+    board = _make_board()
+    caller = _EchoCaller(empty_for=("Beta",))
+    out = synthesize(caller, board, _plan())
+    assert "output.docx" in out
+    assert "c100" in out["output.docx"]  # Alpha's content shipped
+
+
+def test_empty_plan_fails_loudly():
+    import pytest as _pytest
+    from src.loop.synthesis import EmptyAssemblyError
     board = _make_board()
     plan = {"files": [{"filename": "output.docx", "form": "memo",
                        "sections": []}]}
     board.metadata["deliverables"] = {}
-    synthesize(_EchoCaller(), board, plan)
+    with _pytest.raises(EmptyAssemblyError):  # honesty guard: never "completed"
+        synthesize(_EchoCaller(), board, plan)
     fails = [e for e in board.events if e.kind == "assembly_failure"]
     assert fails  # structural failure surfaced, not silent
 
