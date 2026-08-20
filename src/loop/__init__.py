@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from .actions import bulk_extract_frontier, execute_actions, finalize_bulk_extraction
+from .actions import auto_bind, bulk_extract_frontier, execute_actions, finalize_bulk_extraction
 from .control import (
     _force_analysis_gate,
     blackboard_audit, controller_decide, maintain_ledger, reframe_ledger,
@@ -138,6 +138,11 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
                 quiet_rounds += 1
             else:
                 quiet_rounds = 0
+
+            new_claims = (derived_added > 0) or (last_summary.get("claims", 0) > 0)
+            if new_claims:
+                bind_result = auto_bind(board, worker_caller)
+                last_summary["auto_bind"] = bind_result
 
         if quiet_rounds >= DIMINISHING_ROUNDS:
             board.stop_reason = (

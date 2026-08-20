@@ -317,20 +317,35 @@ External claims need lower default confidence than primary documents unless from
 
 # --- BIND ---
 
-def auto_bind(board: Board, caller) -> int:
-    """Bind all unbound claims to open targets. Runs automatically after
-    each iteration's reads — don't wait for the controller to ask."""
+def auto_bind(board: Board, caller) -> dict:
+    """Bind all unbound claims to open targets. Returns structured counters:
+    offered, bound, unbound_after, calls, failures."""
     unbound = board.unbound_claims()
     if not unbound or not board.open_targets():
-        return 0
+        return {"offered": 0, "bound": 0, "unbound_after": 0, "calls": 0,
+                "failures": 0}
+    offered = len(unbound)
     total_bound = 0
+    calls = 0
+    failures = 0
     for i in range(0, len(unbound), _BIND_BATCH):
         batch = unbound[i:i + _BIND_BATCH]
-        result = _run_bind_batch({"claims": batch}, board, caller)
-        total_bound += result.get("bound", 0)
-    if total_bound:
-        board.log("auto_bind", f"bound {total_bound}/{len(unbound)} unbound claims")
-    return total_bound
+        calls += 1
+        try:
+            result = _run_bind_batch({"claims": batch}, board, caller)
+            total_bound += result.get("bound", 0)
+        except Exception as exc:
+            failures += 1
+            board.log("auto_bind_error", f"batch {calls} failed: {exc}")
+    unbound_after = len(board.unbound_claims())
+    if total_bound or failures:
+        board.log("auto_bind",
+                  f"offered={offered} bound={total_bound} "
+                  f"unbound_after={unbound_after} calls={calls} "
+                  f"failures={failures}")
+    return {"offered": offered, "bound": total_bound,
+            "unbound_after": unbound_after, "calls": calls,
+            "failures": failures}
 
 
 def _bind_jobs(action: dict, board: Board) -> list[tuple[str, dict]]:
