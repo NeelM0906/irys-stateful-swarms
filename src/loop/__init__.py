@@ -141,7 +141,8 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
 
             new_claims = (derived_added > 0) or (last_summary.get("claims", 0) > 0)
             if new_claims:
-                bind_result = auto_bind(board, worker_caller)
+                bind_result = auto_bind(board, worker_caller,
+                                        budget_stop_pct=BUDGET_STOP_PCT)
                 last_summary["auto_bind"] = bind_result
 
         if quiet_rounds >= DIMINISHING_ROUNDS:

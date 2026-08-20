@@ -317,35 +317,45 @@ External claims need lower default confidence than primary documents unless from
 
 # --- BIND ---
 
-def auto_bind(board: Board, caller) -> dict:
+def auto_bind(board: Board, caller, budget_stop_pct: float = 85.0) -> dict:
     """Bind all unbound claims to open targets. Returns structured counters:
-    offered, bound, unbound_after, calls, failures."""
+    offered, bound, unbound_after, calls, failures, invalid."""
     unbound = board.unbound_claims()
-    if not unbound or not board.open_targets():
-        return {"offered": 0, "bound": 0, "unbound_after": 0, "calls": 0,
-                "failures": 0}
+    open_targets = board.open_targets()
+    if not unbound or not open_targets:
+        return {"offered": 0, "bound": 0,
+                "unbound_after": len(unbound) if unbound else 0,
+                "calls": 0, "failures": 0, "invalid": 0}
     offered = len(unbound)
     total_bound = 0
     calls = 0
     failures = 0
+    invalid = 0
     for i in range(0, len(unbound), _BIND_BATCH):
+        if board.budget_used_pct() >= budget_stop_pct:
+            board.log("auto_bind_budget_stop",
+                      f"stopped after {calls} calls at {board.budget_used_pct()}%")
+            break
         batch = unbound[i:i + _BIND_BATCH]
         calls += 1
         try:
             result = _run_bind_batch({"claims": batch}, board, caller)
-            total_bound += result.get("bound", 0)
+            if not result or not isinstance(result, dict):
+                invalid += 1
+            else:
+                total_bound += result.get("bound", 0)
         except Exception as exc:
             failures += 1
             board.log("auto_bind_error", f"batch {calls} failed: {exc}")
     unbound_after = len(board.unbound_claims())
-    if total_bound or failures:
+    if total_bound or failures or invalid:
         board.log("auto_bind",
                   f"offered={offered} bound={total_bound} "
                   f"unbound_after={unbound_after} calls={calls} "
-                  f"failures={failures}")
+                  f"failures={failures} invalid={invalid}")
     return {"offered": offered, "bound": total_bound,
             "unbound_after": unbound_after, "calls": calls,
-            "failures": failures}
+            "failures": failures, "invalid": invalid}
 
 
 def _bind_jobs(action: dict, board: Board) -> list[tuple[str, dict]]:

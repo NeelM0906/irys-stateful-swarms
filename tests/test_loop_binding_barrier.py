@@ -23,10 +23,10 @@ def test_dormant_no_unbound():
     assert len(board.unbound_claims()) == 0
     result = auto_bind(board, MagicMock())
     assert result == {"offered": 0, "bound": 0, "unbound_after": 0,
-                      "calls": 0, "failures": 0}
+                      "calls": 0, "failures": 0, "invalid": 0}
 
 
-def test_dormant_no_open_targets():
+def test_dormant_no_open_targets_reports_actual_unbound():
     board = Board(instruction="test")
     board.add_source(Source(id="s0", name="doc", path="a.txt", size_bytes=100))
     c = Claim(id="c0", kind="observation", content="fact", source_doc="doc",
@@ -35,6 +35,7 @@ def test_dormant_no_open_targets():
     result = auto_bind(board, MagicMock())
     assert result["offered"] == 0
     assert result["calls"] == 0
+    assert result["unbound_after"] == 1
 
 
 def test_activates_with_unbound_and_open_targets():
@@ -107,3 +108,59 @@ def test_does_not_rebind_already_bound():
         result = auto_bind(board, MagicMock())
 
     assert result["offered"] == 3
+
+
+def test_budget_stop_prevents_overrun():
+    board = _board_with_claims_and_targets(n_claims=130, bound=False)
+    board.token_budget = 1000
+    board.total_tokens_used = 900  # 90% used, above default 85% stop
+
+    with patch("src.loop.actions._run_bind_batch") as mock_bind:
+        mock_bind.return_value = {"bound": 10}
+        result = auto_bind(board, MagicMock())
+
+    assert result["calls"] == 0
+    assert result["offered"] == 130
+    assert result["bound"] == 0
+
+
+def test_budget_stop_mid_batch():
+    board = _board_with_claims_and_targets(n_claims=130, bound=False)
+    board.token_budget = 10000
+    board.total_tokens_used = 0
+
+    call_count = 0
+    def side_effect(job, board, caller):
+        nonlocal call_count
+        call_count += 1
+        board.total_tokens_used = 9000  # push to 90% after first call
+        return {"bound": 5}
+
+    with patch("src.loop.actions._run_bind_batch", side_effect=side_effect):
+        result = auto_bind(board, MagicMock())
+
+    assert result["calls"] == 1
+    assert result["bound"] == 5
+
+
+def test_invalid_response_counted():
+    board = _board_with_claims_and_targets(n_claims=2, bound=False)
+
+    with patch("src.loop.actions._run_bind_batch") as mock_bind:
+        mock_bind.return_value = {}  # empty dict = malformed
+        result = auto_bind(board, MagicMock())
+
+    assert result["invalid"] == 1
+    assert result["bound"] == 0
+    assert result["failures"] == 0
+
+
+def test_none_response_counted_as_invalid():
+    board = _board_with_claims_and_targets(n_claims=2, bound=False)
+
+    with patch("src.loop.actions._run_bind_batch") as mock_bind:
+        mock_bind.return_value = None
+        result = auto_bind(board, MagicMock())
+
+    assert result["invalid"] == 1
+    assert result["bound"] == 0
