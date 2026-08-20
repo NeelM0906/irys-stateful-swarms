@@ -9,13 +9,14 @@ analytical work.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 
 from .hydration import build_evidence_context
 from .llm import call_json, call_text
-from .state import Board, Claim, Target
+from .state import Board, Target
 
 _CLAIMS_PER_TARGET = 48
 _CONTENT_CAP = 500
@@ -23,7 +24,6 @@ _EVIDENCE_CAP = 220
 _REPAIR_ENABLED = os.getenv("LOOP_SYNTHESIS_REPAIR", "1").strip() in (
     "1", "true", "yes",
 )
-_REPAIR_PACKET_CAP = int(os.getenv("LOOP_SYNTHESIS_REPAIR_PACKET_CAP", "320000"))
 _REPAIR_DRAFT_CAP = int(os.getenv("LOOP_SYNTHESIS_REPAIR_DRAFT_CAP", "120000"))
 
 _SYNTHESIS_HYDRATE = os.getenv("LOOP_SYNTHESIS_HYDRATE", "0").strip().lower() in (
@@ -46,8 +46,14 @@ def _dedup_claims(claims, cap: int) -> list:
     return out
 
 
-def target_packet(board: Board, target: Target) -> dict:
-    """Everything synthesis may use for one target — bounded."""
+def target_packet(board: Board, target: Target,
+                  cap: int | None = _CLAIMS_PER_TARGET) -> dict:
+    """Everything synthesis may use for one target.
+
+    cap=None exposes every deduplicated active claim — the section-local
+    chunker takes all of them and splits across calls instead of dropping
+    claims at a count cap.
+    """
     bound = board.claims_for_target(target)
     derived = sorted(
         (c for c in bound if c.is_derived),
@@ -57,7 +63,8 @@ def target_packet(board: Board, target: Target) -> dict:
         (c for c in bound if not c.is_derived),
         key=lambda c: -c.confidence,
     )
-    picked = _dedup_claims(derived + raw, _CLAIMS_PER_TARGET)
+    ordered = derived + raw
+    picked = _dedup_claims(ordered, cap if cap is not None else len(ordered))
     return {
         "id": target.id,
         "need": target.need,
@@ -109,6 +116,7 @@ def unit_packets(board: Board, obligation_ids: list[str] | None = None) -> list[
             picked = claims[:per_unit]
             rows.append({
                 "unit": u.name,
+                "unit_id": u.id,
                 "anchor": u.anchor,
                 "status": u.status,
                 "claims": [
@@ -139,54 +147,6 @@ def requirement_block(board: Board) -> str:
     return "\n".join(
         f"- {c.content}" + (f" (Source: {c.source_doc})" if c.source_doc else "")
         for c in reqs
-    )
-
-
-_SUPPLEMENTARY_PER_TARGET = 12
-_SUPPLEMENTARY_CAP = 200_000
-
-
-def _supplementary_evidence(board: Board) -> str:
-    """Claims from waived critical/high targets - facts the investigation
-    collected but whose parent questions were not formally resolved.
-    Synthesis should use these where relevant rather than leaving them
-    only in a limitations footnote.
-    """
-    blocks = []
-    for t in board.targets:
-        if t.status != "waived" or t.materiality not in ("critical", "high"):
-            continue
-        if t.reason.startswith("merged into"):
-            continue
-        bound = board.claims_for_target(t)
-        if not bound:
-            continue
-        derived = sorted(
-            (c for c in bound if c.is_derived), key=lambda c: -c.confidence)
-        raw = sorted(
-            (c for c in bound if not c.is_derived), key=lambda c: -c.confidence)
-        picked = _dedup_claims(derived + raw, _SUPPLEMENTARY_PER_TARGET)
-        if not picked:
-            continue
-        blocks.append({
-            "question": t.need,
-            "status": "partially_investigated",
-            "materiality": t.materiality,
-            "claims": [
-                {"kind": c.kind, "content": c.content,
-                 "evidence": c.evidence, "source": c.source_doc}
-                for c in picked
-            ],
-        })
-    if not blocks:
-        return ""
-    serialized = json.dumps(blocks, indent=1, default=str)[:_SUPPLEMENTARY_CAP]
-    return (
-        "\n\nSUPPLEMENTARY EVIDENCE from partially investigated questions "
-        "(these facts were collected but their parent questions were not fully "
-        "resolved - use them where they add relevant detail, numbers, dates, "
-        "parties, or terms to the deliverable):\n"
-        + serialized
     )
 
 
@@ -274,12 +234,457 @@ Every required file must appear. Every mandatory set-valued obligation must appe
     return parsed
 
 
+_SECTION_CHUNK_CAP = 400_000  # existing packet ceiling, now per-call, fixed pre-smoke
+
+
+def _norm_section_key(name: str) -> str:
+    return " ".join(str(name).split()).casefold()
+
+
+def _claim_row(c) -> dict:
+    return {
+        "id": c.id, "kind": c.kind,
+        "content": c.content[:_CONTENT_CAP],
+        "evidence": c.evidence[:_EVIDENCE_CAP],
+        "source": c.source_doc, "section": c.source_section,
+        "verified": c.verified, "confidence": round(c.confidence, 2),
+        "support_refs": c.support_refs,
+        "source_span": list(c.source_span) if c.source_span else None,
+    }
+
+
+def _eligible_section_items(board: Board, file_plan: dict) -> list[dict]:
+    """Enumerate individually atomic claim/unit/requirement items eligible for
+    each planned section, each carrying its target/obligation context.
+    Eligible = active claims bound to the section's targets (uncapped,
+    deduplicated per section) + units for coverage obligations routed to that
+    section + binding requirement claims. Unbound claims stay out of scope."""
+    coverage = [c for c in file_plan.get("coverage", []) if isinstance(c, dict)]
+    cov_by_section: dict[str, list[dict]] = {}
+    for c in coverage:
+        cov_by_section.setdefault(
+            _norm_section_key(c.get("section", "")), []).append(c)
+
+    req_claims = [c for c in board.claims
+                  if c.active and c.kind == "requirement"]
+
+    # Binding requirements are per-call governing context: a distinct role
+    # repeated into every chunk of every section (tracked as requirement_ids,
+    # never mixed into the serialize-once claim-item stream).
+    requirement_items = [
+        {"type": "requirement", "payload": {"requirement": _claim_row(rc)},
+         "claims": [rc], "unit_ids": []}
+        for rc in req_claims
+    ]
+    req_ids = {rc.id for rc in req_claims}
+
+    def _unit_items(cov_entry: dict, seen_obligations: set[str],
+                    seen_claim_ids: set[str],
+                    governing_req_ids: set[str]) -> list[dict]:
+        ob_id = str(cov_entry.get("obligation_id", ""))
+        if ob_id in seen_obligations:
+            return []  # an obligation's units render exactly once per file
+        seen_obligations.add(ob_id)
+        out = []
+        for up in unit_packets(board, obligation_ids=[ob_id]):
+            header = {"obligation": up["obligation"],
+                      "obligation_id": up["obligation_id"],
+                      "coverage": up["coverage"],
+                      "coverage_plan": cov_entry}
+            for row in up.get("units", []):
+                claim_objs = row.pop("_claim_objects", [])
+                # Section-wide identity distinguishes CANONICAL serialization
+                # from per-call resolved CONTEXT: a claim already canonical in
+                # this section keeps its full row inside the unit (every unit
+                # call must be self-resolvable), but is charged and observed
+                # as context, never double-counted in the canonical stream.
+                canonical = [c for c in claim_objs
+                             if c.id not in seen_claim_ids]
+                # A governing requirement is ALREADY fully present in every
+                # call via the preamble — a unit referencing it resolves
+                # in-call by reference, never by a second serialized copy.
+                req_refs = [c.id for c in claim_objs
+                            if c.id in governing_req_ids]
+                context = [c for c in claim_objs
+                           if c.id in seen_claim_ids
+                           and c.id not in governing_req_ids]
+                for c in canonical:
+                    seen_claim_ids.add(c.id)
+                row = dict(row)
+                if req_refs:
+                    row["claims"] = [cr for cr in row.get("claims", [])
+                                     if cr.get("id") not in req_refs]
+                    row["requirement_claims_in_preamble"] = req_refs
+                if context:
+                    row["context_claims_canonical_elsewhere"] = [
+                        c.id for c in context]
+                unit_id = str(row.get("unit_id", "")) or str(row.get("unit", ""))
+                out.append({"type": "unit",
+                            "payload": {**header, "unit": row},
+                            "claims": canonical,
+                            "context_claims": context,
+                            "unit_ids": [unit_id]})
+        return out
+
+    sections_out: list[dict] = []
+    seen_obligations: set[str] = set()
+    for sec in file_plan.get("sections", []):
+        title = str(sec.get("title", ""))
+        items: list[dict] = []
+        # Requirements govern every call; a requirement claim never repeats
+        # as an ordinary claim item within the section.
+        seen_claim_ids: set[str] = set(req_ids)
+        seen_tids: set[str] = set()
+        for tid in [str(t) for t in sec.get("target_ids", [])]:
+            if tid in seen_tids:
+                continue
+            seen_tids.add(tid)
+            t = board.find_target(tid)
+            if t is None:
+                continue
+            pkt = target_packet(board, t, cap=None)
+            claim_objs = pkt.pop("_claim_objects", [])
+            header = {"target_id": pkt["id"], "need": pkt["need"],
+                      "materiality": pkt["materiality"],
+                      "status": pkt["status"], "reason": pkt["reason"]}
+            for c in claim_objs:
+                if c.id in seen_claim_ids:
+                    continue  # duplicate within the section serializes once
+                seen_claim_ids.add(c.id)
+                items.append({"type": "claim",
+                              "payload": {"target": header,
+                                          "claim": _claim_row(c)},
+                              "claims": [c], "unit_ids": []})
+        for c in cov_by_section.get(_norm_section_key(title), []):
+            items.extend(_unit_items(c, seen_obligations, seen_claim_ids, req_ids))
+        sections_out.append({"title": title,
+                             "guidance": str(sec.get("guidance", "")),
+                             "requirements": requirement_items,
+                             "items": items})
+
+    # Coverage routed to an unknown section name uses the existing Coverage
+    # Appendix fallback — deterministic, never dropped, never misrouted, and
+    # governed by the same binding requirements as every other section.
+    known = {_norm_section_key(s["title"]) for s in sections_out}
+    appendix_items: list[dict] = []
+    appendix_seen: set[str] = set(req_ids)
+    for c in coverage:
+        if _norm_section_key(c.get("section", "")) in known:
+            continue
+        appendix_items.extend(
+            _unit_items(c, seen_obligations, appendix_seen, req_ids))
+    if appendix_items:
+        sections_out.append({"title": "Coverage Appendix",
+                             "guidance": "render every unit exactly once",
+                             "requirements": requirement_items,
+                             "items": appendix_items})
+    return sections_out
+
+
+_CHUNK_SEP = "\n"
+
+
+def _chunk_section_items(items: list[dict], char_cap: int,
+                         requirements: list[dict] | None = None
+                         ) -> list[list[dict]]:
+    """Deterministic atomic chunks: each item (one claim, one unit) is
+    serialized whole; packing accounts for the exact joined payload length
+    including separators; the split is always BETWEEN items. Requirements are
+    per-call governing context prepended to EVERY chunk, and their length is
+    charged against each chunk's cap. Only a genuinely indivisible single
+    item (or the requirement preamble itself) may exceed the cap."""
+class ChunkCapacityError(ValueError):
+    """The governing requirement preamble plus one bounded item cannot fit
+    the per-call ceiling — a structural failure, never an over-cap call.
+    Carries a `detail` dict identifying the offending composition."""
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
+def _chunk_section_items(items: list[dict], char_cap: int,
+                         requirements: list[dict] | None = None
+                         ) -> list[list[dict]]:
+    """Deterministic atomic chunks: each item (one claim, one unit) is
+    serialized whole; packing accounts for the exact joined payload length
+    including separators; the split is always BETWEEN items. Requirements are
+    per-call governing context prepended to EVERY chunk, and their length is
+    charged against each chunk's cap — including the first item. Only a
+    genuinely indivisible single item with NO governing preamble may exceed
+    the cap alone; a preamble+item that cannot fit fails explicitly."""
+    if not items:
+        return [[]]  # empty-section semantics take precedence over preamble
+    req = [{**r, "serialized": json.dumps(r["payload"], indent=1, default=str)}
+           for r in (requirements or [])]
+    req_len = (sum(len(r["serialized"]) for r in req)
+               + len(_CHUNK_SEP) * len(req))
+    if req and req_len >= char_cap:
+        raise ChunkCapacityError(
+            f"requirement preamble ({req_len} chars) exceeds the per-call "
+            f"ceiling ({char_cap})",
+            detail={"reason": "preamble_exceeds_cap",
+                    "preamble_chars": req_len, "cap": char_cap,
+                    "requirement_ids": [c.id for r in req
+                                        for c in r.get("claims", [])]})
+    chunks: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_len = req_len
+    for it in items:
+        s = json.dumps(it["payload"], indent=1, default=str)
+        length = len(s) + (len(_CHUNK_SEP) if cur else 0)
+        if cur and cur_len + length > char_cap:
+            chunks.append(req + cur)
+            cur = []
+            cur_len = req_len
+            length = len(s)
+        if not cur and req and req_len + length > char_cap:
+            raise ChunkCapacityError(
+                f"requirement preamble ({req_len}) + item ({length}) exceeds "
+                f"the per-call ceiling ({char_cap})",
+                detail={"reason": "preamble_plus_item_exceeds_cap",
+                        "preamble_chars": req_len, "item_chars": length,
+                        "cap": char_cap, "item_type": it.get("type"),
+                        "item_claim_ids": [c.id for c in it.get("claims", [])],
+                        "item_unit_ids": it.get("unit_ids", [])})
+        cur.append({**it, "serialized": s})
+        cur_len += length
+    if cur:
+        chunks.append(req + cur)
+    return chunks or [[]]
+
+
+def _synthesize_section(caller, repairer, board: Board, *, filename: str,
+                        file_form: str, format_rules: str,
+                        section: dict, chunk: list[dict], chunk_index: int,
+                        chunk_count: int,
+                        sec_chunks: list | None = None) -> tuple[str, dict]:
+    """Draft (and, when enabled, repair) exactly one section chunk against
+    exactly its serialized items. Returns (text, chunk_manifest).
+
+    The chunk manifest is registered into sec_chunks BEFORE the model call
+    and mutated in place — a thrown call still persists the exact payload
+    that reached the model."""
+    payloads = _CHUNK_SEP.join(it["serialized"] for it in chunk)
+    requirement_ids = [c.id for it in chunk if it["type"] == "requirement"
+                       for c in it.get("claims", [])]
+    claim_ids = [c.id for it in chunk if it["type"] != "requirement"
+                 for c in it.get("claims", [])]
+    context_claim_ids = [c.id for it in chunk
+                         for c in it.get("context_claims", [])]
+    unit_ids = [u for it in chunk for u in it.get("unit_ids", [])]
+
+    seen_cov: set[str] = set()
+    cov_entries = []
+    for it in chunk:
+        if it["type"] != "unit":
+            continue
+        cp = it["payload"].get("coverage_plan", {})
+        ob = str(cp.get("obligation_id"))
+        if ob in seen_cov:
+            continue
+        seen_cov.add(ob)
+        cov_entries.append(cp)
+    coverage_lines = "\n".join(
+        f"- {cp.get('obligation_id')}: render every unit exactly once as "
+        f"{cp.get('unit_mode', 'subsection')}"
+        + (", each unit carrying: "
+           + ", ".join(str(s) for s in cp.get('required_slots', []))
+           if cp.get("required_slots") else "")
+        for cp in cov_entries
+    )
+
+    hydration_stats: dict = {}
+    source_text_block = ""
+    # Hydration covers every claim object physically present in this call:
+    # ordinary claims, requirement claims, and resolved context copies.
+    chunk_claims = [c for it in chunk for c in it.get("claims", [])]
+    chunk_claims += [c for it in chunk for c in it.get("context_claims", [])]
+    if _SYNTHESIS_HYDRATE and chunk_claims:
+        evidence_context, hydration_stats = build_evidence_context(
+            board, chunk_claims, max_chars=_SYNTHESIS_HYDRATE_MAX,
+        )
+        board.log(
+            "synthesis_hydrate",
+            f"{filename} / {section['title']} chunk {chunk_index + 1}: "
+            f"{hydration_stats.get('merged_windows', 0)} windows, "
+            f"{hydration_stats.get('chars', 0)} chars"
+            + (f", {hydration_stats.get('dropped_windows')} dropped"
+               if hydration_stats.get("dropped_windows") else ""),
+            detail={"filename": filename, "section": section["title"],
+                    "chunk_index": chunk_index, **hydration_stats},
+        )
+        if evidence_context:
+            source_text_block = (
+                "\n\nPRIMARY SOURCE TEXT backing the items above — use it for "
+                "exact wording, numbers, dates, parties, and citations. Do not "
+                "import facts not reflected in the items.\n" + evidence_context
+            )
+
+    chunk_note = (f" (part {chunk_index + 1} of {chunk_count} for this section — "
+                  "write ONLY this part's content; other parts are handled "
+                  "separately; do not summarize or introduce them)"
+                  if chunk_count > 1 else "")
+
+    prompt = f"""You are writing ONE SECTION of the final deliverable of a completed expert investigation. The items below are your ONLY knowledge — write from them, never invent.
+
+ORIGINAL REQUEST:
+{board.instruction}
+
+FILE: {filename} - {file_form}
+{format_rules}
+
+SECTION: {section['title']}{chunk_note}
+SECTION GUIDANCE: {section['guidance']}
+
+{f'''COVERAGE PLAN for units in this chunk (binding structure — fill it, do not reorganize):
+{coverage_lines}
+''' if coverage_lines else ''}
+ITEMS (binding requirements, resolved questions with their claims, and coverage units — a "requirement" item is a constraint on the work product and must be satisfied wherever it applies):
+{payloads if payloads.strip() else '(no packet-supported content for this section)'}
+{source_text_block}
+
+NUMERICAL FIDELITY: every specific number, amount, percentage, date, count, dollar figure, ratio, or calculation in the items MUST appear verbatim in the output.
+
+Write ONLY this section's content (no document title, no other sections, no meta-commentary). Professional, specific, decision-ready."""
+
+    # Register the manifest BEFORE any model call — a thrown call still
+    # persists the exact payload it received.
+    manifest = {
+        "chunk_index": chunk_index, "chunk_count": chunk_count,
+        "items": len(chunk), "claim_ids": claim_ids,
+        "requirement_ids": requirement_ids,
+        "context_claim_ids": context_claim_ids, "unit_ids": unit_ids,
+        "serialized_chars": len(payloads),  # exact joined payload length
+        "hydration_stats": hydration_stats,
+        "hydration_chars": hydration_stats.get("chars", 0),
+        "hydration_sha256": (
+            hashlib.sha256(source_text_block.encode("utf-8")).hexdigest()
+            if source_text_block else None
+        ),
+        "serialized_payload": payloads,
+        "result": "raised",
+        "repair": "off",
+    }
+    if sec_chunks is not None:
+        sec_chunks.append(manifest)
+
+    tin0, tout0 = board.tokens_input, board.tokens_output
+    try:
+        text = call_text(caller, board, prompt, kind="synthesize",
+                         max_tokens=32768, temperature=0.25)
+    except Exception as exc:
+        # A thrown section call is an explicit assembly failure — stamp the
+        # accounting, log the exact context, then keep fail-loud behavior.
+        manifest["tokens_in"] = board.tokens_input - tin0
+        manifest["tokens_out"] = board.tokens_output - tout0
+        board.log(
+            "assembly_failure",
+            f"{filename} / {section['title']}: chunk {chunk_index + 1}/"
+            f"{chunk_count} draft call raised: {str(exc)[:160]}",
+            detail={"filename": filename, "section": section["title"],
+                    "chunk_index": chunk_index, "claim_ids": claim_ids,
+                    "requirement_ids": requirement_ids,
+                    "error": str(exc)[:300]},
+        )
+        raise
+    manifest["result"] = "ok" if text.strip() else "empty"
+
+    if text and _REPAIR_ENABLED:
+        try:
+            repaired = _repair_section(
+                repairer, board, filename=filename, format_rules=format_rules,
+                section=section, payloads=payloads,
+                coverage_lines=coverage_lines,
+                source_text_block=source_text_block, draft=text,
+            )
+        except Exception:
+            manifest["repair"] = "raised"
+            manifest["tokens_in"] = board.tokens_input - tin0
+            manifest["tokens_out"] = board.tokens_output - tout0
+            raise
+        if _usable_repair(text, repaired):
+            text = repaired
+            manifest["repair"] = "kept"
+        else:
+            manifest["repair"] = "discarded"
+
+    manifest["tokens_in"] = board.tokens_input - tin0
+    manifest["tokens_out"] = board.tokens_output - tout0
+    return text, manifest
+
+
+def _repair_section(caller, board: Board, *, filename: str, format_rules: str,
+                    section: dict, payloads: str, coverage_lines: str,
+                    source_text_block: str, draft: str) -> str:
+    """Scoped coverage editor: repair one section chunk against exactly its
+    own items. Never sees or rewrites other sections."""
+    prompt = f"""You are the coverage editor for ONE SECTION of an expert work product. Compare the draft against its items and rewrite the COMPLETE section so every item-supported material fact survives.
+
+FILE: {filename}
+{format_rules}
+
+SECTION: {section['title']}
+SECTION GUIDANCE: {section['guidance']}
+
+EDITORIAL RULES:
+- Preserve correct draft content, names, dates, amounts, citations, structure.
+- Do not invent outside the items. Exact numbers, dates, thresholds, parties, defined terms, and section names are high-risk facts — include them verbatim when material.
+- If the items contain a material fact the draft missed, add it in place; never append a generic note.
+{f'''- COVERAGE: {coverage_lines}''' if coverage_lines else ''}
+
+ITEMS (the exact population the draft was written from — atomic, never truncated):
+{payloads}
+{source_text_block}
+
+DRAFT SECTION TO REPAIR:
+{draft[:_REPAIR_DRAFT_CAP]}
+
+Return only the complete revised section. No commentary."""
+    return call_text(caller, board, prompt, kind="synthesis_repair",
+                     max_tokens=32768, temperature=0.15)
+
+
+def _assemble_sections(filename: str, section_outputs: list[tuple[str, list[str]]],
+                       residual_note: str) -> str:
+    """Deterministic assembly: code supplies headings and concatenates in plan
+    order. No model call rewrites, summarizes, or drops sections."""
+    is_xlsx = filename.lower().endswith(".xlsx")
+    parts: list[str] = []
+    if is_xlsx:
+        # Sheets are the structure; injected headings would collide.
+        for _title, texts in section_outputs:
+            parts.extend(t for t in texts if t.strip())
+        if residual_note:
+            rows = "\n".join(
+                f"| {line.lstrip('- ').strip()} |"
+                for line in residual_note.splitlines() if line.strip()
+            )
+            parts.append("## Sheet: Limitations\n| Unresolved material "
+                         "question |\n| --- |\n" + rows)
+    else:
+        for title, texts in section_outputs:
+            body = "\n\n".join(t for t in texts if t.strip())
+            if not body:
+                body = "(no packet-supported content for this section)"
+            if title:
+                parts.append(f"## {title}\n\n{body}")
+            else:
+                parts.append(body)
+        if residual_note:
+            parts.append("## Limitations\n\nThe following material questions "
+                         "were not fully resolved during the investigation:\n"
+                         + residual_note)
+    return "\n\n".join(parts)
+
+
 def synthesize(smart_caller, board: Board, plan: dict,
                repair_caller=None) -> dict[str, str]:
-    """Generate each deliverable from its planned target packets.
+    """Generate each deliverable section-locally: atomic section-scoped packet
+    chunks, section-scoped drafting/repair, deterministic assembly.
 
-    smart_caller is used for the main synthesis call (the premium model).
-    repair_caller, if provided, handles iterative repair passes (cheaper model).
+    smart_caller is used for the drafting calls (the premium model).
+    repair_caller, if provided, handles scoped repair passes (cheaper model).
     """
     repairer = repair_caller or smart_caller
     results: dict[str, str] = {}
@@ -328,50 +733,6 @@ def synthesize(smart_caller, board: Board, plan: dict,
     for file_plan in plan.get("files", []):
         filename = str(file_plan.get("filename", "output.docx"))
         is_xlsx = filename.lower().endswith(".xlsx")
-        sections = file_plan.get("sections", [])
-        coverage = [c for c in file_plan.get("coverage", []) if isinstance(c, dict)]
-
-        packet_blocks = []
-        for sec in sections:
-            tids = [str(t) for t in sec.get("target_ids", [])]
-            packets = [
-                target_packet(board, t)
-                for t in (board.find_target(tid) for tid in tids) if t
-            ]
-            packet_blocks.append({
-                "section": str(sec.get("title", "")),
-                "guidance": str(sec.get("guidance", "")),
-                "packets": packets,
-            })
-
-        # Collect Claim objects from packets before JSON serialization
-        all_packet_claims: list[Claim] = []
-        for pb in packet_blocks:
-            for pkt in pb.get("packets", []):
-                all_packet_claims.extend(pkt.pop("_claim_objects", []))
-
-        coverage_block = ""
-        upackets = []
-        if coverage:
-            ob_ids = [str(c.get("obligation_id", "")) for c in coverage]
-            upackets = unit_packets(board, obligation_ids=ob_ids)
-            for up in upackets:
-                for row in up.get("units", []):
-                    all_packet_claims.extend(row.pop("_claim_objects", []))
-            plan_lines = "\n".join(
-                f"- {c.get('obligation_id')}: render units in section "
-                f"'{c.get('section')}' as {c.get('unit_mode', 'subsection')}"
-                + (f", each unit carrying: {', '.join(str(s) for s in c.get('required_slots', []))}"
-                   if c.get("required_slots") else "")
-                for c in coverage
-            )
-            coverage_block = f"""
-COVERAGE PLAN (binding structure — fill it, do not reorganize it):
-{plan_lines}
-
-UNIT PACKETS (every unit below MUST appear in the deliverable exactly once, in the source's own order/numbering; a unit without evidence appears with an explicit gap note, never silently dropped):
-{json.dumps(upackets, indent=1, default=str)[:200_000]}
-"""
 
         format_rules = (
             "FORMAT: Spreadsheet content. Use '## Sheet: <name>' to start each "
@@ -380,104 +741,147 @@ UNIT PACKETS (every unit below MUST appear in the deliverable exactly once, in t
             "not summaries. No prose paragraphs."
             if is_xlsx else
             "FORMAT: Markdown that converts to a professional document. "
-            "'#' for the title, '##'/'###' for sections, '-' for bullets, "
+            "'##'/'###' for headings within this section, '-' for bullets, "
             "plain paragraphs for prose. Concrete numbers, exact names, "
             "citations to source documents inline like (Source: <doc>, <section>)."
         )
+        sections = _eligible_section_items(board, file_plan)
+        file_manifest: dict = {"filename": filename, "sections": []}
+        section_outputs: list[tuple[str, list[str]]] = []
+        total_calls = 0
 
-        supplementary_block = _supplementary_evidence(board)
+        def _persist_artifacts() -> None:
+            """Every exit path — success or failure — persists exactly what
+            happened: the assembly manifest and the funnel-searchable packet
+            record of every chunk that actually reached a model call."""
+            _dump_assembly(board, filename, file_manifest)
+            _dump_packets(board, filename, {
+                "sections": [
+                    {"section": s["title"],
+                     "chunks": [c.get("serialized_payload", "")
+                                for c in s.get("chunks", [])]}
+                    for s in file_manifest["sections"]
+                ],
+            })
 
-        source_text_block = ""
-        if _SYNTHESIS_HYDRATE and all_packet_claims:
-            req_claims = [c for c in board.claims if c.active and c.kind == "requirement"]
-            hydrate_claims = all_packet_claims + req_claims
+        try:
+          for section in sections:
+            section_req_ids = [c.id for it in section.get("requirements", [])
+                               for c in it.get("claims", [])]
+            # Register the section manifest up front and mutate it in place —
+            # a mid-section failure still persists every executed chunk.
+            sec_manifest: dict = {"title": section["title"], "chunks": []}
+            file_manifest["sections"].append(sec_manifest)
+            try:
+                chunks = _chunk_section_items(
+                    section["items"], _SECTION_CHUNK_CAP,
+                    requirements=section.get("requirements"),
+                )
+            except ChunkCapacityError as exc:
+                board.log(
+                    "assembly_failure",
+                    f"{filename} / {section['title']}: {exc}",
+                    detail={"filename": filename, "section": section["title"],
+                            "reason": "chunk_capacity",
+                            "requirement_ids": section_req_ids,
+                            "error": str(exc)[:300], **exc.detail},
+                )
+                # The failure entry identifies the offending composition; it
+                # never claims a chunk was sent. Persistence happens in the
+                # finally below for every exit path.
+                sec_manifest["failure"] = {
+                    "reason": "chunk_capacity",
+                    "requirement_ids": section_req_ids,
+                    "error": str(exc)[:300], **exc.detail,
+                }
+                raise
+            texts: list[str] = []
+            for i, chunk in enumerate(chunks):
+                if not chunk:
+                    sec_manifest["chunks"].append(
+                        {"chunk_index": 0, "chunk_count": 1, "items": 0,
+                         "requirement_ids": section_req_ids,
+                         "result": "empty_section"})
+                    # A section with no eligible items is a structural
+                    # failure surfaced explicitly, never a silent omission.
+                    board.log(
+                        "assembly_failure",
+                        f"{filename} / {section['title']}: no eligible items",
+                        detail={"filename": filename,
+                                "section": section["title"],
+                                "reason": "empty_section",
+                                "requirement_ids": section_req_ids},
+                    )
+                    continue
+                text, m = _synthesize_section(
+                    smart_caller, repairer, board,
+                    filename=filename,
+                    file_form=str(file_plan.get("form", "document")),
+                    format_rules=format_rules,
+                    section=section, chunk=chunk,
+                    chunk_index=i, chunk_count=len(chunks),
+                    sec_chunks=sec_manifest["chunks"],  # registered pre-call
+                )
+                texts.append(text)
+                total_calls += 1
+                if m["result"] == "empty":
+                    # An empty/failed section call is an explicit assembly
+                    # failure, never a silent omission.
+                    board.log(
+                        "assembly_failure",
+                        f"{filename} / {section['title']}: chunk "
+                        f"{i + 1}/{len(chunks)} produced no content",
+                        detail={"filename": filename,
+                                "section": section["title"],
+                                "chunk_index": i,
+                                "claim_ids": m["claim_ids"]},
+                    )
+            section_outputs.append((section["title"], texts))
+        finally:
+            # Success or failure, persist exactly what happened: the assembly
+            # manifest and the funnel-searchable record of every chunk that
+            # actually reached a model call.
+            _persist_artifacts()
 
-            evidence_context, hydrate_stats = build_evidence_context(
-                board, hydrate_claims, max_chars=_SYNTHESIS_HYDRATE_MAX,
-            )
+        if not sections:
             board.log(
-                "synthesis_hydrate",
-                f"{filename}: {hydrate_stats['merged_windows']} windows, "
-                f"{hydrate_stats['chars']} chars"
-                + (f", {hydrate_stats['dropped_windows']} dropped"
-                   if hydrate_stats.get('dropped_windows') else ""),
-                detail={"filename": filename, **hydrate_stats},
+                "assembly_failure",
+                f"{filename}: plan produced no renderable sections",
+                detail={"filename": filename, "reason": "empty_plan"},
             )
-            if evidence_context:
-                source_text_block = (
-                    "\n\nPRIMARY SOURCE TEXT backing the claims above. "
-                    "The analysis packets decide what belongs in the deliverable; "
-                    "use source text for exact wording, numbers, dates, parties, "
-                    "citations, and to resolve any ambiguity in claim summaries. "
-                    "Do not import facts from source text that are not reflected "
-                    "in the analysis packets.\n"
-                    + evidence_context
-                )
-
-        prompt = f"""You are writing the final deliverable of a completed expert investigation. The analysis below is your ONLY knowledge — write from it, never invent. Where claims carry evidence quotes and sources, use them for precision and citation.
-
-ORIGINAL REQUEST:
-{board.instruction}
-
-FILE: {filename} - {file_plan.get('form', 'document')}
-{format_rules}
-
-{f'''BINDING REQUIREMENTS discovered in the sources — satisfy EVERY one (addressees, length minimums, mandatory elements, required references, procedural requests). If a length minimum exists, meet it with substance, not padding:
-{requirement_block(board)}
-''' if requirement_block(board) else ''}
-
-ANALYSIS (per section, with resolved questions and their claims):
-{json.dumps(packet_blocks, indent=1, default=str)[:400_000]}
-{coverage_block}
-{supplementary_block}
-{source_text_block}
-
-{f'''UNRESOLVED MATERIAL QUESTIONS (disclose honestly in a final Limitations note):
-{residual_note}''' if residual_note else ''}
-
-NUMERICAL FIDELITY: Every specific number, amount, percentage, date, case count, dollar figure, ratio, or calculation from the analysis MUST appear in the deliverable. Never round, paraphrase, or omit a concrete figure — if the analysis says "75 cases" or "24% deficiency rate" or "$712,500 gap", those exact numbers must be in the output.
-
-Write the COMPLETE deliverable. Professional, specific, decision-ready. Every conclusion traceable to the analysis. No meta-commentary about the process."""
-
-        _dump_packets(board, filename, {
-            "sections": packet_blocks,
-            "coverage_plan": coverage,
-            "unit_packets": upackets,
-        })
-        text = call_text(
-            smart_caller, board, prompt, kind="synthesize",
-            max_tokens=32768, temperature=0.25,
+        final = _assemble_sections(filename, section_outputs, residual_note)
+        results[filename] = final or "(synthesis produced no content)"
+        board.log(
+            "synthesize",
+            f"{filename}: {len(final)} chars from {total_calls} section calls "
+            f"across {len(sections)} sections",
+            detail={"filename": filename, "section_calls": total_calls,
+                    "sections": [
+                        {"title": s["title"],
+                         "chunks": [{k: v for k, v in c.items()
+                                     if k != "serialized_payload"}
+                                    for c in s["chunks"]]}
+                        for s in file_manifest["sections"]
+                    ]},
         )
-        if text and _REPAIR_ENABLED:
-            repaired = _repair_synthesis(
-                repairer, board,
-                filename=filename,
-                file_plan=file_plan,
-                format_rules=format_rules,
-                packet_blocks=packet_blocks,
-                coverage_block=coverage_block,
-                supplementary_block=supplementary_block,
-                source_text_block=source_text_block,
-                residual_note=residual_note,
-                draft=text,
-            )
-            if _usable_repair(text, repaired):
-                board.log(
-                    "synthesis_repair",
-                    f"{filename}: {len(text)} -> {len(repaired)} chars",
-                )
-                text = repaired
-            else:
-                board.log(
-                    "synthesis_repair",
-                    f"{filename}: repair discarded",
-                    detail={"draft_chars": len(text),
-                            "repair_chars": len(repaired or "")},
-                )
-        results[filename] = text or "(synthesis produced no content)"
-        board.log("synthesize", f"{filename}: {len(text)} chars")
 
     return results
+
+
+def _dump_assembly(board: Board, filename: str, manifest: dict) -> None:
+    """Persist the assembly manifest and each exact serialized chunk supplied
+    to synthesis — funnel analysis reads what the model actually saw."""
+    if not board.output_dir:
+        return
+    try:
+        d = Path(board.output_dir) / "loop"
+        d.mkdir(parents=True, exist_ok=True)
+        safe = filename.replace("/", "_").replace("\\", "_")
+        (d / f"assembly_{safe}.json").write_text(
+            json.dumps(manifest, indent=1, default=str), encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _usable_repair(draft: str, repaired: str | None) -> bool:
@@ -490,54 +894,6 @@ def _usable_repair(draft: str, repaired: str | None) -> bool:
     if len(draft) < 1200:
         return len(cleaned) >= len(draft) * 0.5
     return len(cleaned) >= max(1200, int(len(draft) * 0.6))
-
-
-def _repair_synthesis(smart_caller, board: Board, *, filename: str,
-                      file_plan: dict, format_rules: str,
-                      packet_blocks: list[dict], coverage_block: str,
-                      supplementary_block: str, source_text_block: str = "",
-                      residual_note: str, draft: str) -> str:
-    """Second-pass coverage editor.
-
-    The first synthesis call writes. This pass checks whether packet-supported
-    facts, numbers, issues, conflicts, recommendations, and required rows were
-    actually rendered in the final artifact shape.
-    """
-    prompt = f"""You are the final coverage editor for an expert work product. The draft below may be well written but incomplete. Compare it against the analysis packets and rewrite the COMPLETE file so packet-supported material survives into the deliverable.
-
-ORIGINAL REQUEST:
-{board.instruction}
-
-FILE: {filename} - {file_plan.get('form', 'document')}
-{format_rules}
-
-EDITORIAL RULES:
-- Preserve correct draft content, names, dates, amounts, citations, and structure.
-- Do not invent outside the analysis packets.
-- Do not demote packet-supported material into limitations merely because a target status is waived, blocked, or open. Use limitations only for genuinely missing evidence or true blockers.
-- For issue, discrepancy, conflict, comparison, checklist, and due-diligence deliverables, render each material item in a scoring-friendly structure: unique identifier, exact source location(s), concrete issue/difference, severity or priority, legal/commercial impact, and recommended resolution when the packets support one.
-- For drafting deliverables, make the main draft incorporate all supported deal terms and make any separate issues list capture conflicts, open questions, and bracketed drafting choices explicitly.
-- Exact numbers, dates, thresholds, percentages, parties, defined terms, vote counts, deadlines, statutory/regulatory references, and document section names are high-risk facts. If they are in the packets and material, include them verbatim.
-- If the draft already covers an item, keep it. If the packets contain a material item the draft missed, add it in the proper section instead of appending a generic note.
-
-ANALYSIS PACKETS:
-{json.dumps(packet_blocks, indent=1, default=str)[:_REPAIR_PACKET_CAP]}
-{coverage_block[:80_000]}
-{supplementary_block[:100_000]}
-{source_text_block[:200_000] if source_text_block else ''}
-
-{f'''UNRESOLVED MATERIAL QUESTIONS:
-{residual_note}''' if residual_note else ''}
-
-DRAFT TO REPAIR:
-{draft[:_REPAIR_DRAFT_CAP]}
-
-Return only the complete revised deliverable. No commentary about the repair process."""
-
-    return call_text(
-        smart_caller, board, prompt, kind="synthesis_repair",
-        max_tokens=32768, temperature=0.15,
-    )
 
 
 def _dump_packets(board: Board, filename: str, packet_blocks) -> None:
