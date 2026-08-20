@@ -235,6 +235,7 @@ Every required file must appear. Every mandatory set-valued obligation must appe
 
 
 _SECTION_CHUNK_CAP = 400_000  # existing packet ceiling, now per-call, fixed pre-smoke
+_MAX_ITEMS_PER_CHUNK = int(os.getenv("LOOP_SYNTHESIS_MAX_ITEMS_PER_CHUNK", "150"))
 
 
 def _norm_section_key(name: str) -> str:
@@ -410,7 +411,8 @@ class ChunkCapacityError(ValueError):
 
 
 def _chunk_section_items(items: list[dict], char_cap: int,
-                         requirements: list[dict] | None = None
+                         requirements: list[dict] | None = None,
+                         max_items: int = 0,
                          ) -> list[list[dict]]:
     """Deterministic atomic chunks: each item (one claim, one unit) is
     serialized whole; packing accounts for the exact joined payload length
@@ -418,7 +420,8 @@ def _chunk_section_items(items: list[dict], char_cap: int,
     per-call governing context prepended to EVERY chunk, and their length is
     charged against each chunk's cap — including the first item. Only a
     genuinely indivisible single item with NO governing preamble may exceed
-    the cap alone; a preamble+item that cannot fit fails explicitly."""
+    the cap alone; a preamble+item that cannot fit fails explicitly.
+    max_items caps items per chunk regardless of character budget."""
     if not items:
         return [[]]  # empty-section semantics take precedence over preamble
     req = [{**r, "serialized": json.dumps(r["payload"], indent=1, default=str)}
@@ -439,7 +442,8 @@ def _chunk_section_items(items: list[dict], char_cap: int,
     for it in items:
         s = json.dumps(it["payload"], indent=1, default=str)
         length = len(s) + (len(_CHUNK_SEP) if cur else 0)
-        if cur and cur_len + length > char_cap:
+        if cur and (cur_len + length > char_cap
+                    or (max_items and len(cur) >= max_items)):
             chunks.append(req + cur)
             cur = []
             cur_len = req_len
@@ -782,6 +786,7 @@ def synthesize(smart_caller, board: Board, plan: dict,
                 chunks = _chunk_section_items(
                     section["items"], _SECTION_CHUNK_CAP,
                     requirements=section.get("requirements"),
+                    max_items=_MAX_ITEMS_PER_CHUNK,
                 )
             except ChunkCapacityError as exc:
                 board.log(

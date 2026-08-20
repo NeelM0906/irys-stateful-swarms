@@ -147,6 +147,20 @@ def test_oversized_single_object_travels_alone_unsliced():
         json.loads(ch[0]["serialized"])
 
 
+def test_max_items_per_chunk_splits_before_char_cap():
+    board = _make_board(n_claims_t0=20, n_claims_t1=0)
+    sections = _eligible_section_items(board, _plan(False)["files"][0])
+    items = sections[0]["items"]
+    chunks = _chunk_section_items(items, _SECTION_CHUNK_CAP, max_items=5)
+    assert len(chunks) >= 4
+    for ch in chunks:
+        data_items = [it for it in ch if it["type"] != "requirement"]
+        assert len(data_items) <= 5
+    all_ids = {c.id for it in items for c in it["claims"]}
+    chunk_ids = {c.id for ch in chunks for it in ch for c in it["claims"]}
+    assert chunk_ids == all_ids
+
+
 # --- 5/13. manifest completeness and exact model inputs ------------------------------
 
 def test_manifest_contains_all_eligible_ids_and_exact_payloads(tmp_path):
