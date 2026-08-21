@@ -1355,6 +1355,20 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
 
     candidate_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
 
+    if candidate_hash == control_hash:
+        entry = {"status": "clean", "control_hash": control_hash,
+                 "candidate_hash": control_hash,
+                 "advisory_count": len(findings),
+                 "activation_eligible": True,
+                 "filename": filename, "section_title": section_title,
+                 "chunk_index": chunk_index,
+                 "scope_ids": list(scopes.keys()),
+                 "tokens_in": board.tokens_input - tin0,
+                 "tokens_out": board.tokens_output - tout0,
+                 "elapsed_s": round(time.monotonic() - t0, 2)}
+        ledger.record(entry)
+        return entry
+
     re_prompt = _build_audit_prompt(candidate, scopes, items_text)
     try:
         re_raw = call_json(caller, board, re_prompt,
@@ -1365,8 +1379,8 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"re_audit_error:{str(exc)[:100]}",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
                  "control_fallback": True,
-                 "candidate_hash": candidate_hash,
                  "activation_eligible": False,
                  "edits_applied": len(blocking),
                  "filename": filename, "section_title": section_title,
@@ -1384,8 +1398,8 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"invalid_re_audit:{re_err}",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
                  "control_fallback": True,
-                 "candidate_hash": candidate_hash,
                  "activation_eligible": False,
                  "edits_applied": len(blocking),
                  "filename": filename, "section_title": section_title,
@@ -1404,8 +1418,8 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": "residual_blockers",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
                  "control_fallback": True,
-                 "candidate_hash": candidate_hash,
                  "candidate_text": candidate,
                  "edits_applied": len(blocking),
                  "residual_count": len(re_blocking),

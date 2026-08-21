@@ -1078,6 +1078,66 @@ class TestMeasurementPlaneCompleteness(TestShadowVerifyChunk):
         assert result["candidate_hash"] == result["control_hash"]
         assert result["activation_eligible"] is False
 
+    def test_re_audit_error_uses_control_hash(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
+            "replacement": "$6M",
+        }]}
+        self._patch_call_json(monkeypatch,
+                              [audit, RuntimeError("re-audit fail")])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["candidate_hash"] == result["control_hash"]
+
+    def test_residual_blockers_uses_control_hash(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
+            "replacement": "$6M",
+        }]}
+        re_audit = {"findings": [{
+            "finding_id": "f2", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "still wrong",
+            "impact": "blocking", "operation": "replace", "match": "$6M",
+            "replacement": "$7M",
+        }]}
+        self._patch_call_json(monkeypatch, [audit, re_audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["reason"] == "residual_blockers"
+        assert result["candidate_hash"] == result["control_hash"]
+
+    def test_noop_edit_treated_as_clean(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "same",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
+            "replacement": "$5M",
+        }]}
+        self._patch_call_json(monkeypatch, [audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "clean"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is True
+
     def test_corrected_entry_has_different_candidate_hash(self, monkeypatch):
         audit = {"findings": [{
             "finding_id": "f1", "defect_type": "factual_error",
