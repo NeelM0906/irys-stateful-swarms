@@ -724,6 +724,28 @@ class TestShadowVerifyChunk:
             chunk_index=0, ledger=ledger)
         assert result["status"] == "failed"
         assert "re_audit_error" in result["reason"]
+        assert result["activation_eligible"] is False
+        assert result["control_fallback"] is True
+
+    def test_invalid_re_audit_has_activation_eligible(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
+            "replacement": "$6M",
+        }]}
+        re_audit = {"findings": [{"bad": "missing fields"}]}
+        self._patch_call_json(monkeypatch, [audit, re_audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert "invalid_re_audit" in result["reason"]
+        assert result["activation_eligible"] is False
+        assert result["control_fallback"] is True
 
     def test_control_hash_present(self, monkeypatch):
         self._patch_call_json(monkeypatch, [{"findings": []}])
@@ -972,3 +994,143 @@ class TestDumpCandidate:
         board = FakeBoard()
         board.output_dir = None
         syn._dump_candidate(board, "x.docx", "text", has_corrections=True)
+
+
+# ---------------------------------------------------------------------------
+# Measurement-plane completeness: every entry has both hashes + activation_eligible
+# ---------------------------------------------------------------------------
+
+class TestMeasurementPlaneCompleteness(TestShadowVerifyChunk):
+    """Every sidecar entry must carry control_hash, candidate_hash,
+    and activation_eligible for paired qualification forensics."""
+
+    def test_clean_entry_has_candidate_hash(self, monkeypatch):
+        self._patch_call_json(monkeypatch, [{"findings": []}])
+        ledger = syn.VerificationLedger()
+        draft = "Draft text."
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft=draft,
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "clean"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is True
+
+    def test_skipped_entry_has_both_hashes(self, monkeypatch):
+        self._patch_call_json(monkeypatch, [])
+        ledger = syn.VerificationLedger()
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Some text.",
+            chunk=[], filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "skipped"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is False
+
+    def test_audit_error_has_both_hashes(self, monkeypatch):
+        self._patch_call_json(monkeypatch, [RuntimeError("boom")])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Draft.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is False
+        assert result["control_fallback"] is True
+
+    def test_invalid_audit_has_both_hashes(self, monkeypatch):
+        self._patch_call_json(monkeypatch,
+                              [{"findings": [{"bad": "no fields"}]}])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Draft.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is False
+        assert result["control_fallback"] is True
+
+    def test_edit_failure_has_both_hashes(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace",
+            "match": "$5M", "replacement": "$6M",
+        }, {
+            "finding_id": "f2", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "also wrong",
+            "impact": "blocking", "operation": "replace",
+            "match": "$5M in", "replacement": "$7M in",
+        }]}
+        self._patch_call_json(monkeypatch, [audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M in 2025.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "failed"
+        assert result["candidate_hash"] == result["control_hash"]
+        assert result["activation_eligible"] is False
+
+    def test_corrected_entry_has_different_candidate_hash(self, monkeypatch):
+        audit = {"findings": [{
+            "finding_id": "f1", "defect_type": "factual_error",
+            "scope_id": "target:t1", "description": "wrong",
+            "impact": "blocking", "operation": "replace", "match": "$5M",
+            "replacement": "$6M",
+        }]}
+        re_audit = {"findings": []}
+        self._patch_call_json(monkeypatch, [audit, re_audit])
+        ledger = syn.VerificationLedger()
+        chunk = _make_chunk_items("t1", ["c1"])
+        result = syn._shadow_verify_chunk(
+            None, FakeBoard(), draft="Revenue was $5M.",
+            chunk=chunk, filename="out.docx", section_title="S1",
+            chunk_index=0, ledger=ledger)
+        assert result["status"] == "corrected"
+        assert result["candidate_hash"] != result["control_hash"]
+        assert result["activation_eligible"] is True
+
+
+class TestTaskActivationEligible:
+    def test_all_clean_is_eligible(self):
+        ledger = syn.VerificationLedger()
+        ledger.record({"status": "clean", "activation_eligible": True})
+        ledger.record({"status": "clean", "activation_eligible": True})
+        s = ledger.summary()
+        assert s["task_activation_eligible"] is True
+
+    def test_one_failed_is_ineligible(self):
+        ledger = syn.VerificationLedger()
+        ledger.record({"status": "clean", "activation_eligible": True})
+        ledger.record({"status": "failed", "activation_eligible": False})
+        s = ledger.summary()
+        assert s["task_activation_eligible"] is False
+
+    def test_one_skipped_is_ineligible(self):
+        ledger = syn.VerificationLedger()
+        ledger.record({"status": "skipped", "activation_eligible": False})
+        ledger.record({"status": "clean", "activation_eligible": True})
+        s = ledger.summary()
+        assert s["task_activation_eligible"] is False
+
+    def test_empty_ledger_is_ineligible(self):
+        ledger = syn.VerificationLedger()
+        s = ledger.summary()
+        assert s["task_activation_eligible"] is False
+
+    def test_total_elapsed_s(self):
+        ledger = syn.VerificationLedger()
+        ledger.record({"status": "clean", "activation_eligible": True,
+                        "elapsed_s": 3.5})
+        ledger.record({"status": "corrected", "activation_eligible": True,
+                        "elapsed_s": 7.2, "edits_applied": 1,
+                        "errors_caught": 1})
+        s = ledger.summary()
+        assert s["total_elapsed_s"] == 10.7
