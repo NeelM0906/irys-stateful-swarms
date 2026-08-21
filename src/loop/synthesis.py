@@ -628,10 +628,13 @@ Write ONLY this section's content (no document title, no other sections, no meta
 
     if _VERIFICATION_SHADOW and verification_ledger is not None:
         if not text.strip():
+            _chash = hashlib.sha256(
+                text.encode("utf-8")).hexdigest()
             shadow = {"status": "skipped",
                       "reason": "empty_draft",
-                      "control_hash": hashlib.sha256(
-                          text.encode("utf-8")).hexdigest(),
+                      "control_hash": _chash,
+                      "candidate_hash": _chash,
+                      "activation_eligible": False,
                       "filename": filename,
                       "section_title": section["title"],
                       "chunk_index": chunk_index,
@@ -645,10 +648,12 @@ Write ONLY this section's content (no document title, no other sections, no meta
                     chunk_index=chunk_index, ledger=verification_ledger,
                 )
             except Exception:
+                _chash = hashlib.sha256(
+                    text.encode("utf-8")).hexdigest()
                 shadow = {"status": "failed",
                           "reason": "exception_containment",
-                          "control_hash": hashlib.sha256(
-                              text.encode("utf-8")).hexdigest(),
+                          "control_hash": _chash,
+                          "candidate_hash": _chash,
                           "control_fallback": True,
                           "activation_eligible": False,
                           "filename": filename,
@@ -1076,6 +1081,9 @@ class VerificationLedger:
         self.entries.append(entry)
 
     def summary(self) -> dict:
+        total = self.chunks_verified + self.chunks_skipped
+        total_elapsed = sum(
+            e.get("elapsed_s", 0) for e in self.entries)
         return {
             "chunks_verified": self.chunks_verified,
             "chunks_skipped": self.chunks_skipped,
@@ -1087,6 +1095,11 @@ class VerificationLedger:
             "edits_applied": self.edits_applied,
             "errors_caught": self.errors_caught,
             "activation_eligible": self.activation_eligible,
+            "task_activation_eligible": (
+                total > 0
+                and self.activation_eligible == total
+            ),
+            "total_elapsed_s": round(total_elapsed, 2),
         }
 
 
@@ -1254,6 +1267,8 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "skipped",
                  "reason": "no_scopes" if not scopes else "empty_draft",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
+                 "activation_eligible": False,
                  "filename": filename, "section_title": section_title,
                  "chunk_index": chunk_index,
                  "scope_ids": list(scopes.keys()) if scopes else []}
@@ -1274,6 +1289,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"audit_error:{str(exc)[:100]}",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
+                 "control_fallback": True,
+                 "activation_eligible": False,
                  "filename": filename, "section_title": section_title,
                  "chunk_index": chunk_index,
                  "scope_ids": list(scopes.keys()),
@@ -1288,6 +1306,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"invalid_audit:{err}",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
+                 "control_fallback": True,
+                 "activation_eligible": False,
                  "filename": filename, "section_title": section_title,
                  "chunk_index": chunk_index,
                  "scope_ids": list(scopes.keys()),
@@ -1302,6 +1323,7 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
                 and not f.get("scope_id", "").startswith("requirement:")]
     if not blocking:
         entry = {"status": "clean", "control_hash": control_hash,
+                 "candidate_hash": control_hash,
                  "advisory_count": len(findings),
                  "activation_eligible": True,
                  "filename": filename, "section_title": section_title,
@@ -1318,7 +1340,9 @@ def _shadow_verify_chunk(caller, board: Board, *, draft: str,
         entry = {"status": "failed",
                  "reason": f"edit_failure:{edit_err}",
                  "control_hash": control_hash,
+                 "candidate_hash": control_hash,
                  "control_fallback": True,
+                 "activation_eligible": False,
                  "blocking_count": len(blocking),
                  "filename": filename, "section_title": section_title,
                  "chunk_index": chunk_index,
