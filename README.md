@@ -1,6 +1,6 @@
 # irys-stateful-swarms
 
-**The highest all-pass rate on the Legal Agent Benchmark.** On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
+**The highest all-pass rate on the Legal Agent Benchmark at $5.11/task.** On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro** at **$5.11/task**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines — with no fine-tuning, no custom training data, and no domain-specific scaffolding. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
 
 ## Contents
 
@@ -35,7 +35,7 @@ This is not an incremental improvement to existing approaches. It is a paradigm 
 
 ## Full benchmark results
 
-irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs): 2,010 tasks across 27 legal practice areas — including the new firm-knowledge family (250 tasks over a shared 9,288-document DMS). Every task starts from an empty blackboard with zero prior state so the run does not learn across benchmark tasks. Deployment-specific model assignments, provider routing, and internal spend are intentionally omitted from the public artifact.
+irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs): 2,010 tasks across 27 legal practice areas — including the new firm-knowledge family (250 tasks over a shared 9,288-document DMS). Every task starts from an empty blackboard with zero prior state so the run does not learn across benchmark tasks. Deployment-specific model assignments and provider routing are intentionally omitted from the public artifact.
 
 | Metric | Result |
 |---|---|
@@ -44,6 +44,8 @@ irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LA
 | Criteria micro | `105,240 / 114,437 = 91.96%` |
 | Strict all-pass | `636 / 2,010 = 31.6%` |
 | Tasks at 95%+ | `1,233 / 2,010 = 61.3%` |
+| Total cost | `$10,266` |
+| Cost per task | `$5.11` |
 
 ### Benchmark comparison
 
@@ -51,7 +53,7 @@ Harvey published official LAB results for Tenet and frontier model baselines in 
 
 | System | LAB All-Pass | Est. Cost/Task |
 |---|---:|---:|
-| **irys-stateful-swarms** | **31.6%** | — |
+| **irys-stateful-swarms** | **31.6%** | **$5.11** |
 | Muse Spark 1.1 | 20.0% | ~$0.50 |
 | Harvey Tenet (Kimi K3 + RL) | 19.7% | ~$8 |
 | Grok 4.5 | 12.9% | ~$1 |
@@ -64,7 +66,7 @@ Harvey published official LAB results for Tenet and frontier model baselines in 
 | Gemini 3.6 Flash | 3.3% | ~$2 |
 | GPT-5.6 Sol | 2.5% | ~$12 |
 
-> Opus 4.7 cost from Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchmark-initial-results). Fable 5 and Opus 5 costs estimated from published per-token pricing applied to the Opus 4.7 baseline — see [frontier cost analysis](#frontier-cost-analysis). Other costs from Harvey's [Tenet Research Preview](https://www.harvey.ai/blog/post-training-update-harvey-tenet). irys cost intentionally omitted from the public artifact.
+> **A note on cost methodology:** Harvey's published results are on their private holdout set, which is not publicly available. There is no way for us to run irys on the holdout set or for Harvey to publish their models' costs on the public set, so a direct apples-to-apples cost comparison is not possible. irys cost ($5.11/task) is measured from our full 2,010-task public-set run. Opus 4.7 cost (~$51/task) is from Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchmark-initial-results). Fable 5 and Opus 5 costs are estimated from published per-token pricing applied to the Opus 4.7 baseline — see [frontier cost analysis](#frontier-cost-analysis). Other costs from Harvey's [Tenet Research Preview](https://www.harvey.ai/blog/post-training-update-harvey-tenet). If Harvey or any model provider publishes verified costs on the public benchmark, we will update this table accordingly.
 
 Harvey Tenet is a Kimi K3 base model post-trained with reinforcement learning on ~1,750 legal task environments over 2 months on 150 NVIDIA B300 GPUs. Despite that investment, irys-stateful-swarms — a pure coordination architecture with no fine-tuning, no custom training data, and no domain-specific scaffolding — achieves 60% higher all-pass. The performance comes from the architecture: structured state-building, typed provenance, signal-driven gap identification, and multi-iteration convergence.
 
@@ -83,10 +85,10 @@ Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchm
 | | Opus 4.7 (published) | Claude Fable 5 | Harvey Tenet | **irys-stateful-swarms** |
 |---|---:|---:|---:|---:|
 | LAB All-Pass | 7.1% | 11.5% | 19.7% | **31.6%** |
-| Est. Cost/Task | ~$51 | ~$102 | ~$8 | — |
-| All-pass per dollar | 0.14 | 0.11 | 2.46 | — |
+| Est. Cost/Task | ~$51 | ~$102 | ~$8 | **$5.11** |
+| All-pass per dollar | 0.14 | 0.11 | 2.46 | **6.18** |
 
-The most expensive frontier models deliver the worst results. Fable 5 at ~$102/task achieves only 11.5% all-pass — spending over 12x what Harvey Tenet costs for 42% lower performance. Opus 4.7 at ~$51/task achieves 7.1%. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
+irys-stateful-swarms delivers **56x** the intelligence per dollar of Fable 5, **44x** Opus 4.7, and **2.5x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding. The most expensive frontier models deliver the worst results. Fable 5 at ~$102/task achieves only 11.5% all-pass — spending 20x what irys costs for 64% lower performance. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
