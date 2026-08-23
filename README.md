@@ -2,6 +2,45 @@
 
 **The highest all-pass rate on the Legal Agent Benchmark at $5.11/task.** On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro** at **$5.11/task**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines — with no fine-tuning, no custom training data, and no domain-specific scaffolding. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
 
+### At a glance
+
+| | **irys** | Harvey Tenet | Fable 5 | Opus 4.7 |
+|---|---:|---:|---:|---:|
+| LAB All-Pass | **31.6%** | 19.7% | 11.5% | 7.1% |
+| Cost/Task | **$5.11** | ~$8 | ~$102 | ~$51 |
+| All-pass per dollar | **6.18** | 2.46 | 0.11 | 0.14 |
+| Cost per all-pass point | **$0.16** | $0.41 | $8.87 | $7.18 |
+| Training investment | **Zero** | 150 B300 GPUs, 2 months | — | — |
+
+**56x** more intelligence per dollar than Fable 5. **44x** more than Opus 4.7. **60%** higher all-pass than Harvey Tenet — with zero training.
+
+<details>
+<summary><b>What $100 buys you on LAB</b></summary>
+
+| System | Tasks per $100 | All-pass rate | Expected all-pass tasks per $100 |
+|---|---:|---:|---:|
+| **irys-stateful-swarms** | **19.6** | **31.6%** | **6.2** |
+| Harvey Tenet | 12.5 | 19.7% | 2.5 |
+| Opus 4.7 | 2.0 | 7.1% | 0.14 |
+| Fable 5 | 1.0 | 11.5% | 0.11 |
+
+For the same $100, irys produces **56x** more all-pass tasks than Fable 5 and **44x** more than Opus 4.7.
+
+</details>
+
+<details>
+<summary><b>Post-training vs coordination architecture</b></summary>
+
+| Approach | Base Model | Method | LAB All-Pass | Uplift |
+|---|---|---|---:|---:|
+| Raw model | Kimi K3 | None | 10.8% | — |
+| Post-training | Kimi K3 | LoRA + GSPO, 150 B300 GPUs, 2 months | 19.7% | +82% |
+| Coordination architecture | General-purpose models | Stateful swarms, zero training | **31.6%** | **+193%** |
+
+Harvey invested in domain-specific post-training: RL over ~1,750 legal environments on 150 GPUs for 2 months. That lifted Kimi K3 from 10.8% to 19.7% (+82%). irys achieves +193% over the same baseline with zero training compute. The coordination architecture delivers more than twice the uplift at zero training cost.
+
+</details>
+
 ## Contents
 
 - [Why this matters](#why-this-matters)
@@ -83,56 +122,7 @@ Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchm
 
 > Opus 4.7 LAB cost from [Harvey's initial publication](https://www.harvey.ai/blog/legal-agent-benchmark-initial-results). Per-token pricing from [Anthropic's published API rates](https://docs.anthropic.com/en/docs/about-claude/models). All three models use the same tokenizer (introduced with Opus 4.7), so the cost difference is purely per-token pricing. Fable 5 is exactly 2x on both input ($10 vs $5) and output ($50 vs $25), with mandatory extended thinking. Newer models may use fewer tokens through more efficient reasoning, but the published Opus 4.7 baseline is the only verified LAB cost.
 
-| | Opus 4.7 (published) | Claude Fable 5 | Harvey Tenet | **irys-stateful-swarms** |
-|---|---:|---:|---:|---:|
-| LAB All-Pass | 7.1% | 11.5% | 19.7% | **31.6%** |
-| Est. Cost/Task | ~$51 | ~$102 | ~$8 | **$5.11** |
-| All-pass per dollar | 0.14 | 0.11 | 2.46 | **6.18** |
-
-irys-stateful-swarms delivers **56x** the intelligence per dollar of Fable 5, **44x** Opus 4.7, and **2.5x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding.
-
-#### What $100 buys on LAB
-
-| System | Tasks per $100 | All-pass rate | Expected all-pass tasks per $100 |
-|---|---:|---:|---:|
-| **irys-stateful-swarms** | **19.6** | **31.6%** | **6.2** |
-| Harvey Tenet | 12.5 | 19.7% | 2.5 |
-| Opus 4.7 | 2.0 | 7.1% | 0.14 |
-| Fable 5 | 1.0 | 11.5% | 0.11 |
-
-For the same $100, irys produces **56x** more all-pass tasks than Fable 5 and **44x** more than Opus 4.7.
-
-#### Training investment vs performance
-
-| System | Training investment | LAB All-Pass |
-|---|---|---:|
-| Harvey Tenet | 150 NVIDIA B300 GPUs, 2 months, custom LoRA + GSPO | 19.7% |
-| **irys-stateful-swarms** | **Zero training, zero fine-tuning** | **31.6%** |
-
-Harvey spent an estimated ~$2M+ on post-training compute to build Tenet. irys-stateful-swarms achieves 60% higher all-pass with zero training investment — the performance comes entirely from the coordination architecture.
-
-#### Cost per point of quality
-
-| System | Cost/Task | All-Pass | Cost per all-pass point |
-|---|---:|---:|---:|
-| **irys-stateful-swarms** | **$5.11** | **31.6%** | **$0.16** |
-| Harvey Tenet | ~$8 | 19.7% | $0.41 |
-| Opus 4.7 | ~$51 | 7.1% | $7.18 |
-| Fable 5 | ~$102 | 11.5% | $8.87 |
-
-Each percentage point of all-pass quality costs irys $0.16. The same point costs Fable 5 $8.87 — **55x more**.
-
-#### Post-training vs coordination architecture
-
-| Approach | Base Model | Method | LAB All-Pass | Uplift |
-|---|---|---|---:|---:|
-| Raw model | Kimi K3 | None | 10.8% | — |
-| Post-training | Kimi K3 | LoRA + GSPO, 150 B300 GPUs, 2 months | 19.7% | +82% |
-| Coordination architecture | General-purpose models | Stateful swarms, zero training | **31.6%** | **+193%** |
-
-Harvey invested heavily in post-training Kimi K3 to build Tenet — domain-specific RL over ~1,750 legal environments on 150 GPUs for 2 months. That investment lifted all-pass from 10.8% to 19.7% (+82%). irys-stateful-swarms achieves 31.6% (+193% over the same Kimi K3 baseline) with zero training compute. The coordination architecture delivers more than twice the uplift of domain-specific post-training — at zero training cost.
-
-The most expensive frontier models deliver the worst results. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
+See [at a glance](#at-a-glance) for the full head-to-head comparison. The most expensive frontier models deliver the worst results — Fable 5 at ~$102/task achieves only 11.5% all-pass, spending 20x what irys costs for 64% lower performance. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
