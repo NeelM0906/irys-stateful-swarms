@@ -31,6 +31,8 @@ _SYNTHESIS_HYDRATE = os.getenv("LOOP_SYNTHESIS_HYDRATE", "0").strip().lower() in
 )
 _SYNTHESIS_HYDRATE_MAX = int(os.getenv("LOOP_SYNTHESIS_HYDRATE_MAX_CHARS", "400000"))
 
+_UNIT_DRAFTING = os.getenv("LOOP_SYNTHESIS_UNIT_DRAFTING", "").strip() == "1"
+
 
 def _dedup_claims(claims, cap: int) -> list:
     """Remove near-duplicate claims by content fingerprint, keep highest-confidence."""
@@ -740,6 +742,8 @@ def synthesize(smart_caller, board: Board, plan: dict,
         for t in residuals
     )
 
+    _ud_file_inputs: list[dict] = []
+
     for file_plan in plan.get("files", []):
         filename = str(file_plan.get("filename", "output.docx"))
         is_xlsx = filename.lower().endswith(".xlsx")
@@ -892,6 +896,35 @@ def synthesize(smart_caller, board: Board, plan: dict,
                         for s in file_manifest["sections"]
                     ]},
         )
+
+        if _UNIT_DRAFTING:
+            _ud_file_inputs.append({
+                "filename": filename, "file_plan": file_plan,
+                "sections": sections, "format_rules": format_rules,
+            })
+
+    if _UNIT_DRAFTING and _ud_file_inputs:
+        try:
+            from .unit_drafting import build_unit_drafting_candidate
+            from .paired_artifacts import record_paired_artifacts
+            candidate_build = build_unit_drafting_candidate(
+                smart_caller, board,
+                file_inputs=_ud_file_inputs,
+                control_results=results,
+                residual_note=residual_note,
+            )
+            record_paired_artifacts(
+                board,
+                treatment_id="unit_drafting",
+                upstream_hash=candidate_build.upstream_hash,
+                control=results,
+                candidate=candidate_build,
+            )
+        except Exception as exc:
+            board.log("unit_drafting",
+                      f"candidate build failed: {str(exc)[:200]}",
+                      detail={"reason": "orchestration_exception",
+                              "error": str(exc)[:300]})
 
     return results
 

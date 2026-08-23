@@ -27,12 +27,84 @@ MAX_ITERATIONS = int(os.getenv("LOOP_MAX_ITERATIONS", "12"))
 CONTRACT_ENABLED = os.getenv("LOOP_CONTRACT", "0").strip() in ("1", "true", "yes")
 BUDGET_STOP_PCT = float(os.getenv("LOOP_BUDGET_STOP_PCT", "85"))
 DIMINISHING_ROUNDS = 2
+ANALYSIS_ENRICHMENT = os.getenv("LOOP_ANALYSIS_ENRICHMENT", "0").strip() in ("1", "true", "yes")
+_ENRICHMENT_MAX_CALLS = int(os.getenv("LOOP_ENRICHMENT_MAX_CALLS", "15"))
+_ENRICHMENT_MIN_OBS = int(os.getenv("LOOP_ENRICHMENT_MIN_OBS", "3"))
+_ENRICHMENT_MAX_DERIVED = int(os.getenv("LOOP_ENRICHMENT_MAX_DERIVED", "1"))
 # Iterations at which the blackboard is rebuilt (reframe pass): the ledger is
 # re-derived from accumulated understanding — splits, new questions, reopens.
 REFRAME_ITERATIONS = tuple(
     int(x) for x in os.getenv("LOOP_REFRAME_ITERATIONS", "3,7").split(",") if x.strip()
 )
 AUDIT_EVERY = int(os.getenv("LOOP_AUDIT_EVERY", "3"))
+
+
+def _analysis_enrichment(board, worker_caller, smart_caller):
+    """Post-convergence pass: run analyze on under-analyzed targets.
+
+    Fires only when LOOP_ANALYSIS_ENRICHMENT=1. Identifies targets with
+    many raw observations but few derived claims and dispatches analysis
+    calls to increase the derive ratio before synthesis.
+    """
+    if board.budget_used_pct() >= BUDGET_STOP_PCT:
+        board.log("analysis_enrichment", "skipped: budget exhausted")
+        return
+
+    candidates = []
+    for t in board.targets:
+        if t.status == "waived":
+            continue
+        bound = board.claims_for_target(t)
+        obs = [c for c in bound if c.active and not c.is_derived]
+        derived = [c for c in bound if c.active and c.is_derived]
+        if len(obs) >= _ENRICHMENT_MIN_OBS and len(derived) <= _ENRICHMENT_MAX_DERIVED:
+            candidates.append((t, len(obs), len(derived)))
+
+    candidates.sort(key=lambda x: (-x[1], x[0].rank))
+    candidates = candidates[:_ENRICHMENT_MAX_CALLS]
+
+    if not candidates:
+        board.log("analysis_enrichment", "no under-analyzed targets found")
+        return
+
+    board.log(
+        "analysis_enrichment",
+        f"enriching {len(candidates)} under-analyzed targets "
+        f"(min_obs={_ENRICHMENT_MIN_OBS}, max_derived={_ENRICHMENT_MAX_DERIVED})",
+        detail={"targets": [c[0].id for c in candidates]},
+    )
+
+    actions = []
+    for t, obs_count, derived_count in candidates:
+        actions.append({
+            "kind": "analyze",
+            "target_id": t.id,
+            "instruction": (
+                f"This target has {obs_count} raw observations but only "
+                f"{derived_count} derived conclusions. Derive calculations, "
+                f"comparisons, cross-document connections, risk assessments, "
+                f"and actionable conclusions from the bound evidence."
+            ),
+        })
+
+    derived_before = sum(1 for c in board.claims if c.is_derived)
+    summary = execute_actions(actions, board, worker_caller,
+                              smart_caller=smart_caller)
+    derived_added = sum(1 for c in board.claims if c.is_derived) - derived_before
+
+    if derived_added > 0 or summary.get("claims", 0) > 0:
+        bind_result = auto_bind(board, worker_caller,
+                                budget_stop_pct=BUDGET_STOP_PCT)
+        board.log("analysis_enrichment_bind", "post-enrichment auto_bind",
+                  detail=bind_result)
+
+    board.log(
+        "analysis_enrichment_done",
+        f"enrichment complete: {derived_added} derived claims added from "
+        f"{len(candidates)} targets",
+        detail={**summary, "derived_added": derived_added},
+    )
+    board.snapshot("enriched")
 
 
 def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
@@ -192,6 +264,9 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
 
     board.log("stop", board.stop_reason)
     board.snapshot("final")
+
+    if ANALYSIS_ENRICHMENT:
+        _analysis_enrichment(board, worker_caller, smart)
 
     plan = plan_synthesis(smart, board)
     deliverable = synthesize(synth, board, plan, repair_caller=smart)
