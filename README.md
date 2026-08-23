@@ -1,19 +1,6 @@
 # irys-stateful-swarms
 
-**98x more intelligence per dollar.** On the full 1,251-task [Harvey Legal Agent Benchmark (LAB)](https://github.com/harveyai/harvey-labs), irys-stateful-swarms achieves **17.75% strict all-pass at $1.30/task** — using Gemini Flash models that scored **0% in Harvey's own agentic evaluations.** Harvey's best published result is 10.4% all-pass at $50.90/task. Claude Fable 5, a Mythos-class frontier model, recently set a new high for frontier model performance on LAB at **13.3%** — still 4.45 points below irys-stateful-swarms, at a fraction of the cost. In a subsequent research collaboration with Applied Compute, Harvey post-trained a frontier model with full-parameter RL and a custom harness to reach **16.1%** — still below irys-stateful-swarms on the mean, at unpublished cost, and using the exact architectural behaviours the stateful swarm produces by construction.
-
-| | Harvey initial | Harvey best | Claude Fable 5 | AC harness (Opus 4.8 max) | **irys-stateful-swarms** |
-|---|---|---|---|---|---|
-| Strict all-pass | 7.1% | 10.4% | 13.3% | 16.1% ±2.6% | **17.75%** |
-| Cost per task | $50.90 | $50.90 | —† | —†† | **$1.30** |
-| Intelligence per dollar | 0.14 | 0.20 | —† | —†† | **13.65** |
-| | | | | | **98x** vs initial / **67x** vs best |
-
-> *Intelligence per dollar* = strict all-pass rate ÷ cost per task. Higher is better.
-> † Claude Fable 5 pipeline cost not yet published; intelligence per dollar will be updated when available. Fable 5 was taken offline June 12, 2026 by US government export-control directive.
-> †† Applied Compute × Harvey research result using Opus 4.8 max on an optimised harness with compaction and full-parameter RL on GLM-5.1. Pipeline cost not published. See [Harvey × Applied Compute blog](https://www.harvey.ai/blog/training-a-legal-agent-with-applied-compute).
-
-![Benchmark results](benchmark.png)
+**Stateful coordination, measured on a full public benchmark.** On all 2,010 tasks in the updated [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro**. This public repository reports aggregate outcomes, not production model assignments, provider routing, or internal spend. See [verification](#verification) and [benchmark context](#context) before comparing these results with other runs.
 
 ## Contents
 
@@ -23,14 +10,14 @@
 - [Why stateful swarms matter](#why-stateful-swarms-matter)
 - [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
 - [Beyond legal: domain-agnostic](#beyond-legal-the-stateful-swarm-paradigm-is-domain-agnostic)
-  - [SWE-bench Verified](#swe-bench-verified-blackboard-mcp-achieves-73-of-claude-codes-performance-with-a-minimal-scaffold)
+  - [SWE-bench Verified](#swe-bench-verified-preliminary-scaffold-evaluation)
   - [Datadog 10-K strategic analysis](#datadog-10-k-strategic-analysis)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Contributing](#contributing)
 - [Sources](#sources)
 
-The system doesn't just cost less — it returns dramatically more capability per unit of spend. And this is the *stateless* cost — every task starting from zero with no prior knowledge. With persistent state enabled, subsequent queries would cost a fraction of even this.
+The published run deliberately starts every task from zero prior state. Persistent deployments can instead reuse grounded analytical state, but that reuse benefit is outside the scope of this benchmark.
 
 For a technical discussion of the stateful swarm paradigm and the ideas behind this system, see [Stateful Swarms Make AI Agents Cheaper, Safer, Better](https://www.linkedin.com/pulse/stateful-swarms-make-ai-agents-cheaper-safer-better-devansh-devansh-8enxe).
 
@@ -46,67 +33,40 @@ This is not an incremental improvement to existing approaches. It is a paradigm 
 
 ## Full benchmark results
 
-irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LAB)](https://github.com/harveyai/harvey-labs) — 1,251 tasks across 24 legal practice areas — using **Gemini 3.1 Flash Lite** ($0.25/M input tokens) for extraction and **Gemini 3.5 Flash** ($1.50/M input tokens) for synthesis. These are among the cheapest models available. To ensure fair evaluation, every task starts from an empty blackboard with zero prior state — the hardest possible condition for a stateful system, and the only honest way to benchmark.
+irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs): 2,010 tasks across 27 legal practice areas — including the new firm-knowledge family (250 tasks over a shared 9,288-document DMS). Every task starts from an empty blackboard with zero prior state so the run does not learn across benchmark tasks. Deployment-specific model assignments, provider routing, and internal spend are intentionally omitted from the public artifact.
 
 | Metric | Result |
 |---|---|
-| Tasks completed | `1,251 / 1,251` |
-| Criteria pass rate | `62,800 / 74,990 = 83.74%` |
-| Strict all-pass | `222 / 1,251 = 17.75%` |
-| Success gate (<=2 misses or >=95%) | `336 / 1,251 = 26.86%` |
-| Total cost | `$1,626.08` |
-| Cost per task | `$1.30` |
+| Tasks completed | `2,010 / 2,010` |
+| Criteria macro | `91.35%` |
+| Criteria micro | `105,240 / 114,437 = 91.96%` |
+| Strict all-pass | `636 / 2,010 = 31.6%` |
+| Tasks at 95%+ | `1,233 / 2,010 = 61.3%` |
 
 ### Verification
 
-The complete outputs from the full benchmark run are available as downloadable archives in the [GitHub Releases](../../releases) section. You can score these outputs yourself using the [Harvey LAB scorer](https://github.com/harveyai/harvey-labs) to independently verify these numbers.
+The complete outputs from the full benchmark run are available as downloadable archives in [GitHub Releases](https://github.com/dl1683/irys-stateful-swarms/releases). You can score these outputs yourself using the [Harvey LAB scorer](https://github.com/harveyai/harvey-labs) to independently verify these numbers.
 
 
 ### Context
 
-Harvey's published LAB results use a private holdout set that mirrors the public benchmark distribution. Harvey reported that its strongest published private-holdout all-pass result reached `10.4%`, with earlier initial results at `7.1%` all-pass at about `$50.90/task`. We ran on the public benchmark because we don't have access to the private holdout — we'd welcome the opportunity to run irys-stateful-swarms on the private set for a direct comparison.
+The published run uses the public LAB task set. Private holdout results are not directly interchangeable with public-set results, so this README makes no claim of private-holdout equivalence. Judge agreement, deployment configuration, and other run limitations should be reviewed in the release artifacts before drawing comparisons.
 
-Two notes: due to rate limit issues, we used Gemini 3.1 FL as our judge (instead of Sonnet 4.6 as recommended). We made sure to compare the outputs of both and found over 90%+ agreement so this isn't a killer. Second, we lack access to Harvey's Private Holdout Benchmark (where they get their numbers). However, they endorsed Anthropic's run on their public benchmark when Opus 4.8 released. Since Opus 4.8 from Anthropic and Harvey got very close results, we can reasonably assume similar distributions for public and private benchmark (something said by Harvey themselves). So we think we can reasonably compare the performance of the systems. We're happy to use their benchmarks if provided.
+### Architecture is the public claim
 
-A separate reference point: Claude Fable 5, a Mythos-class frontier model, achieved **13.3% strict all-pass** on LAB — a new high for frontier model performance on the benchmark. irys-stateful-swarms exceeds this by 4.45 percentage points using Gemini Flash models that cost two orders of magnitude less.
+The public result measures the complete system, not an isolated model. The repository therefore makes no model-specific performance attribution. Its reusable contribution is the coordination architecture: structured state-building, typed provenance, signal-driven gap identification, and multi-iteration convergence.
 
-A subsequent [Harvey × Applied Compute research collaboration](https://www.harvey.ai/blog/training-a-legal-agent-with-applied-compute) post-trained Opus 4.8 max using full-parameter reinforcement learning on AC2 infrastructure with a custom harness, reaching **16.1% strict all-pass** (±2.6%) — the highest published result to date. irys-stateful-swarms sits above this on the mean. More importantly, the Applied Compute blog traces their gains to three specific behaviours: artifact completeness (+185 rubric criteria flipped), specificity and exactness (+243 criteria), and grounding (+70 criteria). These are not emergent properties of RL training — they are structural outputs of the stateful swarm architecture. Typed provenance tracking enforces grounding by construction. Convergence gating prevents premature synthesis and ensures artifact completeness. The blackboard's structured entry types force the specificity that the RL run had to teach explicitly. Harvey's research team spent a post-training run to teach a frontier model the behaviours this architecture produces for free, at $1.30/task, using Gemini Flash. The cost of the Applied Compute run is not published.
-
-### It's the architecture, not the model
-
-Harvey's published LAB results include per-model breakdowns across multiple agentic systems. Gemini models — the same model family irys-stateful-swarms uses — scored **0% strict all-pass** across Harvey's agentic evaluations. The same models that produce zero successful tasks in other agentic architectures achieve **17.75% strict all-pass** when coordinated through a stateful swarm.
-
-This is the point we want to make by open-sourcing with cheap models as the default: **the performance comes from the architecture, not from model intelligence.** Swarm coordination, structured state-building, typed provenance tracking, signal-driven gap identification, and multi-iteration convergence — these are engineering contributions that make inexpensive models perform far beyond their individual capability. You don't need a $15/M-token frontier model to do professional document analysis. You need a system that knows how to build and maintain analytical state.
-
-This also makes the system genuinely accessible. Anyone with a Gemini API key and $1.30 can run a complete legal analysis task. The barrier to entry is an afternoon and a credit card, not an enterprise contract.
+The implementation supports multiple providers and explicit deployment configuration. Operators should choose and record their own configuration without committing production values.
 
 ### The stateful advantage
 
-These results were achieved under the hardest possible condition: **zero prior state.** Every task starts from an empty blackboard — no document memory, no entity knowledge, no accumulated understanding. The $1.30/task cost includes re-discovering everything from scratch every single time.
+These results were achieved under the hardest possible condition: **zero prior state.** Every task starts from an empty blackboard, with no document memory, entity knowledge, or accumulated understanding.
 
-In a stateful deployment, the extraction cost (which dominates at ~70% of total spend) is paid once per document set. Subsequent queries skip extraction entirely and proceed directly to analysis and synthesis from cached state.
+In a stateful deployment, grounded document understanding can be retained and reused. Subsequent queries can build on that state instead of rediscovering the same source facts.
 
 [Irys](https://www.irys.ai) takes this further. By combining stateful swarm coordination with hierarchical embeddings, persistent knowledge graphs, entity linking, and typed provenance tracking, Irys reduces the cost of multi-turn inference by up to **1,000x** compared to stateless re-computation. The system doesn't spend tokens constantly re-reading documents, re-extracting entities, or re-deriving analyses it has already performed. Provenance tracking allows Irys to deterministically isolate exactly which state needs updating when new information arrives — rather than re-processing everything, the system targets only the affected subgraph. Combined with deterministic algorithms for entity resolution, obligation tracking, and conflict detection, this means the vast majority of follow-up work never touches an LLM at all.
 
 This is the economic case for stateful swarms: the cost of AI-assisted analysis shifts from "pay full price for every question" to "invest in understanding once, then query cheaply forever."
-
-### Performance by task type
-
-| Task verb | Tasks | Criteria % |
-|---|---:|---:|
-| map | 5 | 92.52 |
-| draft | 427 | 90.22 |
-| analyze | 89 | 86.42 |
-| triage | 8 | 84.89 |
-| scenario | 119 | 83.91 |
-| assess | 22 | 83.57 |
-| research | 10 | 83.43 |
-| summarize | 8 | 82.67 |
-| review | 58 | 80.86 |
-| compare | 148 | 77.14 |
-| extract | 138 | 75.67 |
-| identify | 195 | 74.26 |
-| build | 24 | 69.71 |
 
 ## How stateful swarms reason
 
@@ -348,7 +308,7 @@ This is what makes stateful swarms fundamentally different from stateless approa
 | [`compare-merger-remedies/`](examples/compare-merger-remedies/) | Antitrust | 56/61 | Near-miss: complex multi-jurisdiction comparison |
 | [`datadog-strategic-analysis/`](examples/datadog-strategic-analysis/) | Finance/SEC | N/A | Domain-agnostic proof: 7 10-K filings, 12,657-word investment memo ([comparison](examples/datadog-strategic-analysis/COMPARISON.md)) |
 
-Browse any task's `swarm/blackboard_iter_*.json` files to trace the full reasoning evolution. The complete outputs for all 1,251 tasks are available in the [GitHub Releases](../../releases).
+Browse any task's `swarm/blackboard_iter_*.json` files to trace the full reasoning evolution. The complete outputs for all 2,010 tasks are available in [GitHub Releases](https://github.com/dl1683/irys-stateful-swarms/releases).
 
 ## Why stateful swarms matter
 
@@ -366,9 +326,9 @@ irys-stateful-swarms uses only vanilla API calls and builds its entire understan
 
 In practice, [Irys](https://www.irys.ai), our unified legal AI platform, maintains persistent document indexes, entity graphs, knowledge graphs, and matter-level context across sessions. When an attorney asks a follow-up about the same credit agreement, the system doesn't re-extract 2,400 entries — they're already there. When a new document arrives on an existing deal, the system reconciles it against what it already knows, flags contradictions, and updates its understanding incrementally. Irys also brings citation verification against 50M+ court opinions, drafting with tracked changes, and matter management that organizes all documents, notes, and analysis in one workspace.
 
-The benchmark strips all of that away. Every task starts with an empty blackboard. No prior knowledge. No document memory. No knowledge graphs. No citation databases. No matter context. The $1.30/task cost includes re-discovering concepts that a persistent stateful system would already know.
+The benchmark strips all of that away. Every task starts with an empty blackboard: no prior knowledge, document memory, knowledge graphs, citation databases, or matter context. The run therefore includes work that a persistent stateful system could reuse.
 
-We made this choice because persistent state would be an unfair advantage on a benchmark — the system would be learning from the benchmark itself. But it means **the benchmark numbers understate what a fully stateful system achieves in production.** Lower cost, higher accuracy, faster execution — all from not throwing away what you've already learned.
+We made this choice because persistent state would be an unfair advantage on a benchmark: the system would be learning from the benchmark itself. The benchmark consequently does not measure the reuse benefits of a persistent deployment.
 
 ### Complementary systems we've built
 
@@ -382,7 +342,7 @@ The core mechanism uses diffusion denoise trajectories as an editable reasoning 
 
 Results across multiple domains and model families: **+19.6pp arithmetic improvement** on Qwen3-4B (32% to 51.6%) using just 2-token random prefix perturbation with zero training. The frontier diffusion repair mode achieves score 0.531 vs 0.413 greedy baseline (+28.8%) on planning tasks. Oracle coverage reaches 100% across 25 diverse reasoning tasks from just 10 two-token directions. On legal reasoning across 12 complex scenarios, oracle perturbation beats the baseline on 11/12 tasks (92%) with average +1.6 points on a 10-point scale. Validated across Qwen3 (0.6B, 1.7B, 4B, 8B), DeepSeek-1.5B, phi-2, and LLaDA-MoE (7B), with architecture-dependent mechanisms: 4B models show convergence aid, 8B models show both computation and convergence improvement.
 
-For stateful swarms, this means the worker models doing extraction and calculation — currently the weakest pipeline stages — could reason more accurately without switching to more expensive models. The cost of improved reasoning becomes a small inference-time perturbation, not a 6x model price increase.
+For stateful swarms, this suggests a research path for improving worker reasoning without changing the coordination architecture.
 
 ---
 
@@ -402,7 +362,7 @@ The functional form is derived from Gumbel race competition among K classes befo
 
 Causal evidence goes beyond correlation: confusion-matrix causal prediction achieves r=0.842 with 93-100% sign accuracy across 182 test points (p<10⁻³⁵). Pre-registered RWKV-4 boundary test confirmed α=2.887 within the predicted interval. Blind out-of-distribution validation on unseen architectures and datasets yields r=0.817 (p=0.013). Cross-model ranking across 9 architectures achieves Spearman ρ=0.833 (p=0.005), meaning κ values predict MAP@10 ranking without running retrieval. The law generalizes to biological systems: 32 mouse V1 Neuropixels sessions show 30/32 PASS with mean r=0.736, validated across 5 cortical areas in 30 mice with ≥87% consistency per area.
 
-For multi-model stateful swarms — which route different pipeline stages to different models (Flash Lite for extraction, Flash 3.5 for synthesis) — this provides a principled framework for predicting which model will produce the best representations for which task type, without expensive empirical sweeps.
+For multi-model systems, representation diagnostics offer a general way to compare candidate components without exposing or hard-coding a deployment configuration.
 
 ---
 
@@ -410,7 +370,7 @@ For multi-model stateful swarms — which route different pipeline stages to dif
 
 MapU provides 14 MCP tools for agent integration (bootstrap, ingest, query, investigate, lookup entities, list gaps, track activity, record sessions, handoff context), plus REST API, CLI, and Python package surfaces, all backed by PostgreSQL with pgvector. The system handles document updates through explicit conflict-aware supersession — when evidence changes, MapU doesn't silently overwrite; it tracks the change ordering and can roll back. The mandatory resumption protocol (`mapu resume` first, read gaps and recent activity, execute priority actions) ensures agents pick up where they left off without re-reading everything.
 
-This is the persistence layer that makes stateful swarms practical in production. In a benchmark, the system must start from zero on every task — that's fair evaluation. But in practice, a lawyer working a deal doesn't start from scratch every morning. Within the same matter, the system persists its document understanding, entity graphs, and analytical findings across sessions. Instead of re-reading a 200-page credit agreement every time a user asks a follow-up question, the system already has 2,400 grounded entries in persistent storage — ready to query, extend, and refine. Background maintenance reconciles new documents against existing state, flags contradictions, and updates entity relationships. This is what turns a $1.30/task benchmark tool into a system where the tenth question about the same deal costs a fraction of the first. **Statefulness is the difference between an AI that assists and an AI that understands.**
+This is the persistence layer that makes stateful swarms practical in production. In a benchmark, the system must start from zero on every task — that's fair evaluation. But in practice, a lawyer working a deal doesn't start from scratch every morning. Within the same matter, the system persists its document understanding, entity graphs, and analytical findings across sessions. Instead of re-reading a 200-page credit agreement every time a user asks a follow-up question, grounded entries remain available to query, extend, and refine. Background maintenance reconciles new documents against existing state, flags contradictions, and updates entity relationships. **Statefulness is the difference between an AI that assists and an AI that understands.**
 
 ---
 
@@ -483,41 +443,15 @@ irys-stateful-swarms was validated on the Harvey LAB benchmark, but the underlyi
 
 **We've already proven this across two very different domains.**
 
-### SWE-bench Verified: Blackboard MCP achieves 73% of Claude Code's performance with a minimal scaffold
+### SWE-bench Verified: preliminary scaffold evaluation
 
-We ran [SWE-bench Verified](https://www.swebench.com/) — 500 real GitHub issues from major Python repositories — using **Sonnet 4.6 + Blackboard MCP**. The catch: we couldn't run Blackboard MCP through Claude Code's agent infrastructure because SWE-bench's Docker-based evaluation pipeline doesn't support injecting MCP servers into the agent loop. Instead, we used a **minimal API wrapper** — essentially raw Sonnet 4.6 API calls with Blackboard MCP as the only enhancement. No file navigation tools, no shell execution, no retry logic, no repository mapping. Just the model and the blackboard.
-
-| | Claude Code (Sonnet 4.6) | Codex CLI (o4-mini) | **Blackboard MCP + thin wrapper** |
-|---|---|---|---|
-| Scaffold | Full CLI agent (file tools, shell, retry, repo map) | Full CLI agent | **Bare API wrapper** |
-| Resolve rate (evaluated) | — | — | **73%** |
-| Published % (SWE-bench Verified /500) | **79.6%** | **69.2%** | ~54%* |
-
-> \* Our /500 number is lower because the minimal scaffold failed to produce patches for 97/500 tasks (timeouts, workspace errors) and 16 matplotlib instances couldn't be evaluated due to Docker environment build failures. Among instances that were evaluated, Blackboard MCP resolved **73%** — within striking distance of Claude Code's full-scaffold performance. We already beat Codex CLI's published rate among evaluated instances, using a scaffold with a fraction of the engineering.
-
-**What this means:** A barely-there scaffold with Blackboard MCP achieved **92% of Claude Code's resolve rate** among evaluated instances — and **beat Codex CLI's published 69.2%** outright. The quality gap between our minimal wrapper and a fully-engineered CLI agent is almost entirely about coverage (can the agent navigate the repo and produce a patch at all), not about reasoning quality (can it figure out the right fix). The blackboard is doing the heavy lifting on reasoning; the scaffold just needs to get out of the way.
-
-**Why this matters for you:** If you're already using Claude Code or Codex with Blackboard MCP installed, you're running a better scaffold than what produced these numbers. The reasoning quality the blackboard adds to your existing tools is substantial — and it's free (zero API calls, zero cost).
-
-Full methodology and per-repository breakdown: [`benchmarks/swebench/`](benchmarks/swebench/)
+A preliminary [SWE-bench Verified](https://www.swebench.com/) run explored Blackboard MCP under a thin wrapper. Patch-production gaps and environment failures left incomplete coverage, so the current artifacts are not suitable for a headline product comparison. The working materials remain under `benchmarks/swebench/` and should be rerun under a publication-safe manifest that separates attempted, evaluable, and resolved instances before any result is cited.
 
 ### Datadog 10-K strategic analysis
 
-With zero code changes, we pointed irys-stateful-swarms at 7 Datadog 10-K annual filings (FY2019–FY2025) and asked for a strategic priority analysis. The system produced a 12,657-word investment memo — tracing product strategy evolution, go-to-market transformation, competitive positioning shifts, financial trajectory, and risk factor changes across 7 years of SEC filings. The same blackboard architecture, the same model routing, the same swarm coordination. We ran an equivalent task through Claude Code (Opus) simultaneously — it failed with context window thrashing after 7 minutes, unable to hold the filings in memory. The full comparison is in [`examples/datadog-strategic-analysis/COMPARISON.md`](examples/datadog-strategic-analysis/COMPARISON.md).
+With zero code changes, we pointed irys-stateful-swarms at seven Datadog 10-K annual filings (FY2019–FY2025) and asked for a strategic-priority analysis. The system produced a 12,657-word investment memo tracing product strategy, go-to-market changes, competitive positioning, financial trajectory, and risk factors across the filings. This is qualitative evidence of domain transfer, not a controlled benchmark result.
 
-#### Multi-model scaling experiment
-
-We then ran a controlled experiment across 5 model configurations (Opus 4.6, Sonnet 4.6, Haiku 4.5, Fable 5 with blackboard, Fable 5 without) answering 5 sequential queries against the full Datadog public filing corpus (1,857 files, 520 MB). On the final synthesis query — a full investment thesis requiring integration across all prior analysis dimensions — Fable 5 with blackboard produced the highest-quality output of all five configurations while reading zero corpus files. The same model without blackboard read 70 pages and produced a less insightful answer. The blackboard's structured cross-referencing forced connections between risk factor language changes and financial trajectory data that didn't emerge from raw PDF reads — the blackboard acts as a quality amplifier, not just a cost optimizer.
-
-| Config | Synthesis file reads | Synthesis tokens | Quality |
-|---|---|---|---|
-| **Fable 5 + BB** | **0 files** | **86K** | **Best** — cross-domain analytical connections from accumulated state |
-| Fable 5 (no BB) | 70 pages | 146K | Thorough but isolated — no cross-query insight transfer |
-| Opus 4.6 + BB | 0 files | 66K | Strong structure, zero file reads |
-| Sonnet 4.6 + BB | 5 files | 123K | Competent but generic |
-| Haiku 4.5 + BB | 35 pages | 98K | Material factual errors |
-
-Full experiment data: [`examples/datadog-strategic-analysis/comparison/experiment/`](examples/datadog-strategic-analysis/comparison/experiment/). Detailed methodology and results: [`packages/blackboard-mcp/README.md`](packages/blackboard-mcp/README.md#multi-model-scaling-experiment).
+A follow-on comparison evaluated blackboard reuse across several configurations. Exact routing, configuration-tied performance, and internal operating data are omitted under the repository's publication policy. The bounded public observation is that persistent blackboard state let later queries reuse structured evidence accumulated during earlier queries. The underlying comparison artifacts require a separate publication audit before they should be cited.
 
 ---
 
@@ -536,16 +470,17 @@ Requires Python 3.12+.
 ### Environment variables
 
 ```bash
-# Required: at least one LLM provider
-GEMINI_API_KEY=...              # Google Gemini (primary provider)
-GEMINI_API_KEYS=k1,k2,k3       # Multiple keys for load distribution (optional)
-OPENAI_API_KEY=...              # OpenAI (optional)
-ANTHROPIC_API_KEY=...           # Anthropic (optional)
+# Required: credentials for at least one supported provider
+GEMINI_API_KEY=...
+GEMINI_API_KEYS=k1,k2,k3       # Multiple keys are optional
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
 
-# Optional: model overrides
-SWARM_WORKER_MODEL=gemini-3.1-flash-lite
-SWARM_SYNTHESIS_MODEL=gemini-3.5-flash
-SWARM_REVIEWER_MODEL=gemini-3.5-flash
+# Optional: deployment-specific model overrides
+# Do not commit production values.
+SWARM_WORKER_MODEL=<provider-model-id>
+SWARM_SYNTHESIS_MODEL=<provider-model-id>
+SWARM_REVIEWER_MODEL=<provider-model-id>
 ```
 
 ## Usage
@@ -580,7 +515,7 @@ Contributions welcome! Areas of interest:
 - New worker strategies (extraction patterns, cross-document reasoning, gap detection)
 - Alternative blackboard schemas and entry types
 - Benchmark adapters for non-legal domains
-- Performance optimizations (token efficiency, parallelism, model routing)
+- Performance optimizations (token efficiency, parallelism, scheduling)
 - New document format support
 - Visualization and debugging tools for blackboard evolution
 
@@ -626,9 +561,6 @@ Bounties given out monthly on the 15th.
 
 - Harvey LAB repository: <https://github.com/harveyai/harvey-labs>
 - Harvey initial LAB results: <https://www.harvey.ai/blog/legal-agent-benchmark-initial-results>
-- Harvey published 10.4% LAB update (Opus 4.8): <https://www.harvey.ai/blog/opus-4-8-now-live-in-harvey>
-- Harvey Fable 5 LAB result (13.3%): <https://www.harvey.ai/blog/fable-5-now-available-in-harvey>
-- Harvey × Applied Compute post-training result (16.1%): <https://www.harvey.ai/blog/training-a-legal-agent-with-applied-compute>
 
 ## License
 
