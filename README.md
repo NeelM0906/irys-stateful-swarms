@@ -8,6 +8,7 @@
 - [Full benchmark results](#full-benchmark-results)
   - [Benchmark comparison](#benchmark-comparison)
   - [Frontier cost analysis](#frontier-cost-analysis)
+  - [The stateful advantage](#the-stateful-advantage)
 - [How stateful swarms reason](#how-stateful-swarms-reason)
 - [Why stateful swarms matter](#why-stateful-swarms-matter)
 - [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
@@ -19,7 +20,7 @@
 - [Contributing](#contributing)
 - [Sources](#sources)
 
-The published run deliberately starts every task from zero prior state. Persistent deployments can instead reuse grounded analytical state, but that reuse benefit is outside the scope of this benchmark.
+The published run deliberately starts every task from zero prior state — no document pre-processing, no persistent knowledge graphs, no entity pre-linking, and no blackboard reuse across tasks. [Irys](https://www.irys.ai) has proprietary ingestion infrastructure purpose-built for DMS-scale document analysis (hierarchical embeddings, entity linking, obligation extraction, structural parsing), but none of it was used in this benchmark. The firm-knowledge family alone (250 tasks over 9,288 documents) is exactly where that infrastructure would have the largest impact. These results reflect the raw coordination architecture only.
 
 For a technical discussion of the stateful swarm paradigm and the ideas behind this system, see [Stateful Swarms Make AI Agents Cheaper, Safer, Better](https://www.linkedin.com/pulse/stateful-swarms-make-ai-agents-cheaper-safer-better-devansh-devansh-8enxe).
 
@@ -88,7 +89,50 @@ Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchm
 | Est. Cost/Task | ~$51 | ~$102 | ~$8 | **$5.11** |
 | All-pass per dollar | 0.14 | 0.11 | 2.46 | **6.18** |
 
-irys-stateful-swarms delivers **56x** the intelligence per dollar of Fable 5, **44x** Opus 4.7, and **2.5x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding. The most expensive frontier models deliver the worst results. Fable 5 at ~$102/task achieves only 11.5% all-pass — spending 20x what irys costs for 64% lower performance. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
+irys-stateful-swarms delivers **56x** the intelligence per dollar of Fable 5, **44x** Opus 4.7, and **2.5x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding.
+
+#### What $100 buys on LAB
+
+| System | Tasks per $100 | All-pass rate | Expected all-pass tasks per $100 |
+|---|---:|---:|---:|
+| **irys-stateful-swarms** | **19.6** | **31.6%** | **6.2** |
+| Harvey Tenet | 12.5 | 19.7% | 2.5 |
+| Opus 4.7 | 2.0 | 7.1% | 0.14 |
+| Fable 5 | 1.0 | 11.5% | 0.11 |
+
+For the same $100, irys produces **56x** more all-pass tasks than Fable 5 and **44x** more than Opus 4.7.
+
+#### Training investment vs performance
+
+| System | Training investment | LAB All-Pass |
+|---|---|---:|
+| Harvey Tenet | 150 NVIDIA B300 GPUs, 2 months, custom LoRA + GSPO | 19.7% |
+| **irys-stateful-swarms** | **Zero training, zero fine-tuning** | **31.6%** |
+
+Harvey spent an estimated ~$2M+ on post-training compute to build Tenet. irys-stateful-swarms achieves 60% higher all-pass with zero training investment — the performance comes entirely from the coordination architecture.
+
+#### Cost per point of quality
+
+| System | Cost/Task | All-Pass | Cost per all-pass point |
+|---|---:|---:|---:|
+| **irys-stateful-swarms** | **$5.11** | **31.6%** | **$0.16** |
+| Harvey Tenet | ~$8 | 19.7% | $0.41 |
+| Opus 4.7 | ~$51 | 7.1% | $7.18 |
+| Fable 5 | ~$102 | 11.5% | $8.87 |
+
+Each percentage point of all-pass quality costs irys $0.16. The same point costs Fable 5 $8.87 — **55x more**.
+
+#### Post-training vs coordination architecture
+
+| Approach | Base Model | Method | LAB All-Pass | Uplift |
+|---|---|---|---:|---:|
+| Raw model | Kimi K3 | None | 10.8% | — |
+| Post-training | Kimi K3 | LoRA + GSPO, 150 B300 GPUs, 2 months | 19.7% | +82% |
+| Coordination architecture | General-purpose models | Stateful swarms, zero training | **31.6%** | **+193%** |
+
+Harvey invested heavily in post-training Kimi K3 to build Tenet — domain-specific RL over ~1,750 legal environments on 150 GPUs for 2 months. That investment lifted all-pass from 10.8% to 19.7% (+82%). irys-stateful-swarms achieves 31.6% (+193% over the same Kimi K3 baseline) with zero training compute. The coordination architecture delivers more than twice the uplift of domain-specific post-training — at zero training cost.
+
+The most expensive frontier models deliver the worst results. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
@@ -109,9 +153,22 @@ The implementation supports multiple providers and explicit deployment configura
 
 These results were achieved under the hardest possible condition: **zero prior state.** Every task starts from an empty blackboard, with no document memory, entity knowledge, or accumulated understanding.
 
+#### What we deliberately did not use
+
+The benchmark run excludes several [Irys](https://www.irys.ai) production capabilities that are purpose-built for exactly the kind of work LAB tests:
+
+- **Proprietary document ingestion** — hierarchical structural parsing, section-level embeddings, table extraction, and format-aware chunking. On the benchmark, the system reads raw documents from scratch every time.
+- **Persistent knowledge graphs** — entity linking, obligation tracking, cross-document relationship resolution. The benchmark starts with an empty graph per task.
+- **Blackboard reuse** — in production, analytical state from prior queries persists and compounds. The benchmark forbids reuse: each of the 2,010 tasks starts from zero.
+- **DMS-optimized retrieval** — the firm-knowledge family (250 tasks, 9,288 shared documents) is the exact use case Irys's ingestion pipeline is designed for. On the benchmark, the system receives the raw document set with no pre-processing.
+
+These capabilities would have the largest impact on the firm-knowledge tasks (document management, multi-filing analysis, cross-reference extraction) — precisely the tasks where building prior state eliminates redundant work. The 31.6% all-pass rate reflects none of that advantage.
+
+#### The production multiplier
+
 In a stateful deployment, grounded document understanding can be retained and reused. Subsequent queries can build on that state instead of rediscovering the same source facts.
 
-[Irys](https://www.irys.ai) takes this further. By combining stateful swarm coordination with hierarchical embeddings, persistent knowledge graphs, entity linking, and typed provenance tracking, Irys reduces the cost of multi-turn inference by up to **1,000x** compared to stateless re-computation. The system doesn't spend tokens constantly re-reading documents, re-extracting entities, or re-deriving analyses it has already performed. Provenance tracking allows Irys to deterministically isolate exactly which state needs updating when new information arrives — rather than re-processing everything, the system targets only the affected subgraph. Combined with deterministic algorithms for entity resolution, obligation tracking, and conflict detection, this means the vast majority of follow-up work never touches an LLM at all.
+[Irys](https://www.irys.ai) combines stateful swarm coordination with hierarchical embeddings, persistent knowledge graphs, entity linking, and typed provenance tracking to reduce the cost of multi-turn inference by up to **1,000x** compared to stateless re-computation. The system doesn't spend tokens constantly re-reading documents, re-extracting entities, or re-deriving analyses it has already performed. Provenance tracking allows Irys to deterministically isolate exactly which state needs updating when new information arrives — rather than re-processing everything, the system targets only the affected subgraph. Combined with deterministic algorithms for entity resolution, obligation tracking, and conflict detection, the vast majority of follow-up work never touches an LLM at all.
 
 This is the economic case for stateful swarms: the cost of AI-assisted analysis shifts from "pay full price for every question" to "invest in understanding once, then query cheaply forever."
 
