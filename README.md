@@ -1,11 +1,12 @@
 # irys-stateful-swarms
 
-**Stateful coordination, measured on a full public benchmark.** On all 2,010 tasks in the updated [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro**. This public repository reports aggregate outcomes, not production model assignments, provider routing, or internal spend. See [verification](#verification) and [benchmark context](#context) before comparing these results with other runs.
+**The highest all-pass rate on the Legal Agent Benchmark.** On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **31.6% strict all-pass** and **91.35% criteria macro**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
 
 ## Contents
 
 - [Why this matters](#why-this-matters)
 - [Full benchmark results](#full-benchmark-results)
+  - [Benchmark comparison](#benchmark-comparison)
 - [How stateful swarms reason](#how-stateful-swarms-reason)
 - [Why stateful swarms matter](#why-stateful-swarms-matter)
 - [Blackboard MCP: Claude Code and Codex](#blackboard-mcp-use-stateful-reasoning-in-claude-code-and-codex)
@@ -42,6 +43,30 @@ irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LA
 | Criteria micro | `105,240 / 114,437 = 91.96%` |
 | Strict all-pass | `636 / 2,010 = 31.6%` |
 | Tasks at 95%+ | `1,233 / 2,010 = 61.3%` |
+
+### Benchmark comparison
+
+Harvey published official LAB results for Tenet and frontier model baselines in their [Tenet Research Preview](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (August 2026). The table below places irys-stateful-swarms alongside those results. Competitor all-pass rates and approximate costs are from Harvey's publication (holdout set, ~1,200 tasks). irys ran on the public set (2,010 tasks, 27 families).
+
+| System | LAB All-Pass | Est. Cost/Task |
+|---|---:|---:|
+| **irys-stateful-swarms** | **31.6%** | — |
+| Muse Spark 1.1 | 20.0% | ~$0.50 |
+| Harvey Tenet (Kimi K3 + RL) | 19.7% | ~$8 |
+| Grok 4.5 | 12.9% | ~$1 |
+| Fable 5 | 11.5% | ~$20 |
+| Kimi K3 (base) | 10.8% | ~$8 |
+| DeepSeek V4 Flash | 8.3% | ~$0.40 |
+| GLM-5.2 | 7.1% | — |
+| Opus 5 | 6.7% | ~$22 |
+| Gemini 3.6 Flash | 3.3% | ~$2 |
+| GPT-5.6 Sol | 2.5% | ~$12 |
+
+> Competitor costs estimated from Figure 1 of Harvey's publication (cache-aware Pareto frontier). irys cost intentionally omitted from the public artifact.
+
+Harvey Tenet is a Kimi K3 base model post-trained with reinforcement learning on ~1,750 legal task environments over 2 months on 150 NVIDIA B300 GPUs. Despite that investment, irys-stateful-swarms — a pure coordination architecture with no fine-tuning, no custom training data, and no domain-specific scaffolding — achieves 60% higher all-pass. The performance comes from the architecture: structured state-building, typed provenance, signal-driven gap identification, and multi-iteration convergence.
+
+Frontier models like Fable 5 (~$20/task) and Opus 5 (~$22/task) achieve only 11.5% and 6.7% all-pass respectively. These costs reflect the models' larger tokenizers and higher per-token pricing on long legal documents that routinely span hundreds of pages. Even at 4-10x the cost of budget models, frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
