@@ -55,7 +55,7 @@ Harvey published official LAB results for Tenet and frontier model baselines in 
 | Muse Spark 1.1 | 20.0% | ~$0.50 |
 | Harvey Tenet (Kimi K3 + RL) | 19.7% | ~$8 |
 | Grok 4.5 | 12.9% | ~$1 |
-| Fable 5 | 11.5% | ~$55 |
+| Fable 5 | 11.5% | ~$50 |
 | Kimi K3 (base) | 10.8% | ~$8 |
 | DeepSeek V4 Flash | 8.3% | ~$0.40 |
 | GLM-5.2 | 7.1% | — |
@@ -71,20 +71,21 @@ Harvey Tenet is a Kimi K3 base model post-trained with reinforcement learning on
 
 LAB tasks involve hundreds of pages of legal documents across multiple API calls. Costs for frontier models can be estimated from their published per-token pricing:
 
-| Model | Input (per MTok) | Output (per MTok) | Thinking | Tokenizer | Est. LAB Cost/Task | LAB All-Pass |
-|---|---:|---:|---|---|---:|---:|
-| Claude Fable 5 | $10.00 | $50.00 | Always on (mandatory) | Opus 4.7+ (~1.2x) | **~$55** | 11.5% |
-| Claude Opus 5 | $5.00 | $25.00 | On by default | Opus 4.7+ (~1.2x) | **~$25** | 6.7% |
+| Model | Input (per MTok) | Output (per MTok) | Thinking | Est. LAB Cost/Task | LAB All-Pass |
+|---|---:|---:|---|---:|---:|
+| Claude Opus 4.7 (baseline) | $5.00 | $25.00 | On by default | **~$25** | — |
+| Claude Opus 5 | $5.00 | $25.00 | On by default | **~$25** | 6.7% |
+| Claude Fable 5 | $10.00 | $50.00 | Always on (mandatory) | **~$50** | 11.5% |
 
-> Per-token pricing from Anthropic's published API rates (August 2026). Fable 5 is 2x per-token vs Opus, with mandatory extended thinking that increases output token usage — total cost multiplier ~2.5x. The Opus 4.7+ tokenizer uses ~1-1.35x more tokens on text compared to earlier models. LAB cost estimates reflect multi-call legal document analysis workloads spanning hundreds of pages.
+> Per-token pricing from [Anthropic's published API rates](https://docs.anthropic.com/en/docs/about-claude/models) (August 2026). All three models share the same tokenizer (introduced with Opus 4.7). Fable 5 is 2x per-token vs Opus 4.7/5 on both input and output, with mandatory extended thinking that further increases output token volume. Real-world reports of Fable 5 cost on document-heavy workloads range widely, but input-dominated legal tasks track close to the 2x per-token ratio. LAB cost estimates reflect multi-call legal document analysis spanning hundreds of pages.
 
 | | Harvey Tenet | Claude Fable 5 | Claude Opus 5 | **irys-stateful-swarms** |
 |---|---:|---:|---:|---:|
 | LAB All-Pass | 19.7% | 11.5% | 6.7% | **31.6%** |
-| Est. Cost/Task | ~$8 | ~$55 | ~$25 | — |
-| All-pass per dollar | 2.46 | 0.21 | 0.27 | — |
+| Est. Cost/Task | ~$8 | ~$50 | ~$25 | — |
+| All-pass per dollar | 2.46 | 0.23 | 0.27 | — |
 
-The most expensive frontier models deliver the worst results. Fable 5 at ~$55/task achieves only 11.5% all-pass — spending roughly 7x what Harvey Tenet costs for 42% lower performance. Opus 5 at ~$25/task achieves 6.7%. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
+The most expensive frontier models deliver the worst results. Fable 5 at ~$50/task achieves only 11.5% all-pass — spending over 6x what Harvey Tenet costs for 42% lower performance. Opus 5 at ~$25/task achieves 6.7%. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
