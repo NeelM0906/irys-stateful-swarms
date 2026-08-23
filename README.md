@@ -4,42 +4,17 @@
 
 ### At a glance
 
-| | **irys** | Harvey Tenet | Fable 5 | Opus 4.7 |
-|---|---:|---:|---:|---:|
-| LAB All-Pass | **31.6%** | 19.7% | 11.5% | 7.1% |
-| Cost/Task | **$5.11** | ~$8 | ~$102 | ~$51 |
-| All-pass per dollar | **6.18** | 2.46 | 0.11 | 0.14 |
-| Cost per all-pass point | **$0.16** | $0.41 | $8.87 | $7.18 |
-| Training investment | **Zero** | 150 B300 GPUs, 2 months | — | — |
+![Harvey LAB — All-Pass Rate](assets/lab_allpass_rate.png)
+
+![Performance vs Cost — Harvey LAB](assets/lab_performance_vs_cost.png)
 
 **56x** more intelligence per dollar than Fable 5. **44x** more than Opus 4.7. **60%** higher all-pass than Harvey Tenet — with zero training.
 
-<details>
-<summary><b>What $100 buys you on LAB</b></summary>
+![What $100 Buys You on LAB](assets/lab_what_100_buys.png)
 
-| System | Tasks per $100 | All-pass rate | Expected all-pass tasks per $100 |
-|---|---:|---:|---:|
-| **irys-stateful-swarms** | **19.6** | **31.6%** | **6.2** |
-| Harvey Tenet | 12.5 | 19.7% | 2.5 |
-| Opus 4.7 | 2.0 | 7.1% | 0.14 |
-| Fable 5 | 1.0 | 11.5% | 0.11 |
+![Cost per Point of Quality](assets/lab_cost_per_point.png)
 
-For the same $100, irys produces **56x** more all-pass tasks than Fable 5 and **44x** more than Opus 4.7.
-
-</details>
-
-<details>
-<summary><b>Post-training vs coordination architecture</b></summary>
-
-| Approach | Base Model | Method | LAB All-Pass | Uplift |
-|---|---|---|---:|---:|
-| Raw model | Kimi K3 | None | 10.8% | — |
-| Post-training | Kimi K3 | LoRA + GSPO, 150 B300 GPUs, 2 months | 19.7% | +82% |
-| Coordination architecture | General-purpose models | Stateful swarms, zero training | **31.6%** | **+193%** |
-
-Harvey invested in domain-specific post-training: RL over ~1,750 legal environments on 150 GPUs for 2 months. That lifted Kimi K3 from 10.8% to 19.7% (+82%). irys achieves +193% over the same baseline with zero training compute. The coordination architecture delivers more than twice the uplift at zero training cost.
-
-</details>
+![Training Investment vs Performance](assets/lab_training_vs_performance.png)
 
 ## Contents
 
