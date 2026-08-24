@@ -150,14 +150,97 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
     closeout = False
 
     while True:
+        # ── Entry-admission gates ──
+        # Do not pay for a controller call when no transaction can begin.
+        # Gates fire before the iteration increment so rejected entries
+        # leave board.iteration unchanged (Codex R8 finding 1).
+        if board.iteration >= MAX_ITERATIONS:
+            board.stop_reason = f"max_iterations_entry ({MAX_ITERATIONS})"
+            break
+        if board.budget_used_pct() >= BUDGET_STOP_PCT:
+            board.stop_reason = (
+                f"budget_entry ({board.budget_used_pct()}%); "
+                f"{len(board.material_open_targets())} material targets open"
+            )
+            break
+
         board.iteration += 1
+
+        derived_before = sum(1 for c in board.claims if c.is_derived)
+        resolved_before = len(board.resolved_targets())
 
         decision = controller_decide(
             smart, board, last_summary,
             max_iterations=MAX_ITERATIONS, closeout=closeout,
         )
 
-        # --- convergence policy ---
+        # ── Legacy hazard telemetry (shadow measurement of old ordering) ──
+        # Record what the pre-P1 stop ordering would have done at this point,
+        # before dispatch. All three predicates are always present as booleans.
+        pre_dispatch_open = board.material_open_targets()
+        pre_dispatch_mandatory = board.open_mandatory_obligations()
+        budget_pct_before_dispatch = board.budget_used_pct()
+        converge_would_fire = bool(
+            decision["converge"]
+            and not pre_dispatch_open
+            and not pre_dispatch_mandatory
+        )
+        legacy_hazards = {
+            "convergence": converge_would_fire,
+            "max_iterations": board.iteration >= MAX_ITERATIONS,
+            "budget": budget_pct_before_dispatch >= BUDGET_STOP_PCT,
+        }
+        legacy_first_stop = None
+        for hazard_key in ("convergence", "max_iterations", "budget"):
+            if legacy_hazards[hazard_key]:
+                legacy_first_stop = hazard_key
+                break
+
+        # ── Committed transaction: dispatch the full admitted envelope ──
+        actions = tuple(decision.get("actions") or ())
+        action_summary: dict = {}
+        if actions:
+            action_summary = execute_actions(
+                list(actions), board, worker_caller, smart_caller=smart,
+            )
+
+        derived_added = sum(1 for c in board.claims if c.is_derived) - derived_before
+        resolved_delta = len(board.resolved_targets()) - resolved_before
+        action_summary["derived_added"] = derived_added
+
+        new_claims = (derived_added > 0) or (action_summary.get("claims", 0) > 0)
+        if new_claims:
+            bind_result = auto_bind(board, worker_caller,
+                                    budget_stop_pct=BUDGET_STOP_PCT)
+            action_summary["auto_bind"] = bind_result
+
+        last_summary = action_summary
+        semantic_progress = bool(
+            derived_added > 0
+            or resolved_delta > 0
+            or action_summary.get("claims", 0) > 0
+        )
+        quiet_rounds = 0 if semantic_progress else quiet_rounds + 1
+
+        board.log(
+            "action_transaction_shadow",
+            "admitted controller transaction completed",
+            detail={
+                "iteration": board.iteration,
+                "selected_action_count": len(actions),
+                "dispatcher_envelope_count": len(actions),
+                "selected_but_undispatched": 0,
+                "derived_added": derived_added,
+                "resolved_delta": resolved_delta,
+                "legacy_hazards": legacy_hazards,
+                "legacy_first_stop": legacy_first_stop,
+                "semantic_progress": semantic_progress,
+                "budget_pct_before_dispatch": budget_pct_before_dispatch,
+                "budget_pct_after_transaction": board.budget_used_pct(),
+            },
+        )
+
+        # ── Post-transaction stop predicates (read committed state) ──
         material_open = board.material_open_targets()
         open_mandatory = board.open_mandatory_obligations()
         open_history.append(len(material_open) + len(open_mandatory))
@@ -172,6 +255,7 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
                 f"{len(material_open)} material targets + "
                 f"{len(open_mandatory)} mandatory obligations not shrinking",
             )
+
         if decision["converge"]:
             if not material_open and not open_mandatory:
                 board.stop_reason = f"converged: {decision['converge_reason']}"
@@ -180,50 +264,35 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
                 "converge_denied",
                 f"{len(material_open)} material targets, "
                 f"{len(open_mandatory)} mandatory obligations still open",
-                detail={"targets": [t.id for t in material_open],
-                        "obligations": [o.id for o in open_mandatory]},
+                detail={
+                    "targets": [t.id for t in material_open],
+                    "obligations": [o.id for o in open_mandatory],
+                },
             )
+
         if board.iteration >= MAX_ITERATIONS:
             board.stop_reason = (
                 f"max_iterations ({MAX_ITERATIONS}); "
                 f"{len(material_open)} material targets open"
             )
             break
-        if board.budget_used_pct() >= BUDGET_STOP_PCT:
+
+        post_budget_pct = board.budget_used_pct()
+        if post_budget_pct >= BUDGET_STOP_PCT:
             board.stop_reason = (
-                f"budget ({board.budget_used_pct()}%); "
+                f"budget ({post_budget_pct}%); "
                 f"{len(material_open)} material targets open"
             )
             break
 
-        if not decision["actions"]:
-            quiet_rounds += 1
-        else:
-            derived_before = sum(1 for c in board.claims if c.is_derived)
-            resolved_before = len(board.resolved_targets())
-            last_summary = execute_actions(decision["actions"], board, worker_caller,
-                                              smart_caller=smart)
-            derived_added = sum(1 for c in board.claims if c.is_derived) - derived_before
-            resolved_delta = len(board.resolved_targets()) - resolved_before
-            last_summary["derived_added"] = derived_added
-            if derived_added == 0 and resolved_delta == 0 and last_summary.get("claims", 0) == 0:
-                quiet_rounds += 1
-            else:
-                quiet_rounds = 0
-
-            new_claims = (derived_added > 0) or (last_summary.get("claims", 0) > 0)
-            if new_claims:
-                bind_result = auto_bind(board, worker_caller,
-                                        budget_stop_pct=BUDGET_STOP_PCT)
-                last_summary["auto_bind"] = bind_result
-
         if quiet_rounds >= DIMINISHING_ROUNDS:
             board.stop_reason = (
                 f"diminishing_returns ({quiet_rounds} quiet rounds); "
-                f"{len(board.material_open_targets())} material targets open"
+                f"{len(material_open)} material targets open"
             )
             break
 
+        # ── Reframe / maintenance / audit / forced-analysis / snapshot ──
         if board.iteration in REFRAME_ITERATIONS:
             reframe_ledger(smart, board)
             open_history.clear()
@@ -241,7 +310,6 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
                 board.log("blackboard_audit", f"audit failed: {exc}",
                           detail={"error": str(exc)})
 
-        # Maintenance/reframe/audit can waive targets — catch unanalyzed ones.
         forced = []
         _force_analysis_gate(board, forced)
         if forced:
@@ -257,7 +325,7 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
             if derived_added_forced > 0 or extra.get("claims", 0) > 0:
                 bind_result = auto_bind(board, worker_caller,
                                         budget_stop_pct=BUDGET_STOP_PCT)
-                board.log("force_analyze_bind", f"post-forced auto_bind",
+                board.log("force_analyze_bind", "post-forced auto_bind",
                           detail=bind_result)
 
         board.snapshot()

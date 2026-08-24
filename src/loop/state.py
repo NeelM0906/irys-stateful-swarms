@@ -142,6 +142,21 @@ class Target:
             "closure_basis": self.closure_basis,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Target":
+        return cls(
+            id=str(data.get("id", "")),
+            need=str(data.get("need", "")),
+            materiality=str(data.get("materiality", "medium")),
+            status=str(data.get("status", "open")),
+            reason=str(data.get("reason", "")),
+            claim_refs=[str(r) for r in data.get("claim_refs", [])],
+            created_iteration=int(data.get("created_iteration", 0)),
+            resolved_iteration=data.get("resolved_iteration"),
+            proposed_by=str(data.get("proposed_by", "seed")),
+            closure_basis=[str(r) for r in data.get("closure_basis", [])],
+        )
+
 
 @dataclass
 class Obligation:
@@ -174,6 +189,18 @@ class Obligation:
             "status": self.status, "reason": self.reason,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Obligation":
+        return cls(
+            id=str(data.get("id", "")),
+            text=str(data.get("text", "")),
+            origin=str(data.get("origin", "instruction")),
+            coverage=str(data.get("coverage", "material")),
+            mandatory=bool(data.get("mandatory", True)),
+            status=str(data.get("status", "open")),
+            reason=str(data.get("reason", "")),
+        )
+
 
 @dataclass
 class Unit:
@@ -199,6 +226,18 @@ class Unit:
             "claim_refs": self.claim_refs,
             "status": self.status, "reason": self.reason,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Unit":
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            obligation_ref=str(data.get("obligation_ref", "")),
+            anchor=str(data.get("anchor", "")),
+            claim_refs=[str(r) for r in data.get("claim_refs", [])],
+            status=str(data.get("status", "discovered")),
+            reason=str(data.get("reason", "")),
+        )
 
 
 @dataclass
@@ -251,6 +290,19 @@ class Source:
             "relevance_reason": self.relevance_reason,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Source":
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            path=str(data.get("path", "")),
+            kind=str(data.get("kind", "document")),
+            size_bytes=int(data.get("size_bytes", 0)),
+            read_status=str(data.get("read_status", "unread")),
+            relevance=str(data.get("relevance", "unknown")),
+            relevance_reason=str(data.get("relevance_reason", "")),
+        )
+
 
 @dataclass
 class Event:
@@ -273,6 +325,19 @@ class Event:
             d["tokens_in"] = self.tokens_in
             d["tokens_out"] = self.tokens_out
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Event":
+        return cls(
+            iteration=int(data.get("iteration", 0)),
+            kind=str(data.get("kind", "")),
+            summary=str(data.get("summary", "")),
+            detail=data.get("detail") or {},
+            model=str(data.get("model", "")),
+            tokens=int(data.get("tokens", 0)),
+            tokens_in=int(data.get("tokens_in", 0)),
+            tokens_out=int(data.get("tokens_out", 0)),
+        )
 
 
 @dataclass
@@ -656,7 +721,9 @@ class Board:
         suffix = f"_{label}" if label else ""
         path = d / f"board_iter_{self.iteration}{suffix}.json"
         data = {
+            "schema_version": 2,
             "instruction": self.instruction,
+            "metadata": dict(self.metadata),
             "iteration": self.iteration,
             "stop_reason": self.stop_reason,
             "sources": [s.to_dict() for s in self.sources],
@@ -667,6 +734,7 @@ class Board:
             ],
             "obligations": [o.to_dict() for o in self.obligations],
             "units": [u.to_dict() for u in self.units],
+            "events": [e.to_dict() for e in self.events],
             "total_tokens_used": self.total_tokens_used,
             "tokens_input": self.tokens_input,
             "tokens_output": self.tokens_output,
@@ -675,3 +743,121 @@ class Board:
             "cost_by_model": dict(self.cost_by_model),
         }
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict, *, metadata_override: dict | None = None,
+                      output_dir: str = "", strict: bool = False) -> "Board":
+        """Reconstruct a Board from a snapshot dict.
+
+        Restores all persisted fields and rebuilds runtime indices. Fields
+        that are runtime-only (_doc, _section_index on Source) are left as
+        None — callers that need document text must re-attach via a
+        document_resolver after construction.
+        """
+        board = cls(
+            instruction=str(snapshot.get("instruction", "")),
+            metadata=metadata_override if metadata_override is not None
+                     else dict(snapshot.get("metadata", {})),
+            iteration=int(snapshot.get("iteration", 0)),
+            stop_reason=str(snapshot.get("stop_reason", "")),
+            total_tokens_used=int(snapshot.get("total_tokens_used", 0)),
+            tokens_input=int(snapshot.get("tokens_input", 0)),
+            tokens_output=int(snapshot.get("tokens_output", 0)),
+            token_budget=int(snapshot.get("token_budget", 3_000_000)),
+            cost_by_model=dict(snapshot.get("cost_by_model", {})),
+            output_dir=output_dir,
+        )
+
+        for s in snapshot.get("sources", []):
+            board.sources.append(Source.from_dict(s))
+        for c in snapshot.get("claims", []):
+            board.claims.append(Claim.from_dict(c))
+        for t in snapshot.get("targets", []):
+            board.targets.append(Target.from_dict(t))
+        for o in snapshot.get("obligations", []):
+            board.obligations.append(Obligation.from_dict(o))
+        for u in snapshot.get("units", []):
+            board.units.append(Unit.from_dict(u))
+        for e in snapshot.get("events", []):
+            board.events.append(Event.from_dict(e))
+
+        board._rebuild_runtime_indices()
+
+        if strict:
+            board._validate_snapshot_graph()
+
+        return board
+
+    def _rebuild_runtime_indices(self) -> None:
+        """Rebuild all runtime lookup indices and counters from persisted data."""
+        self._claim_index = {c.id: c for c in self.claims}
+        self._target_index = {t.id: t for t in self.targets}
+        self._source_index = {s.id: s for s in self.sources}
+        self._obligation_index = {o.id: o for o in self.obligations}
+        self._unit_index = {u.id: u for u in self.units}
+        self._unit_name_index = {
+            (u.obligation_ref, " ".join(u.name.lower().split())[:80]): u.id
+            for u in self.units
+        }
+        self._content_index: dict[str, str] = {}
+        for c in self.claims:
+            content_key = " ".join(c.content.lower().split())[:160]
+            if c.source_doc:
+                loc = c.source_span if c.source_span is not None else (c.source_section or "")
+                key = f"{c.kind}|{content_key}|{c.source_doc}|{loc}"
+            else:
+                key = f"{c.kind}|{content_key}"
+            self._content_index[key] = c.id
+
+        def _max_suffix(prefix: str, ids: list[str]) -> int:
+            best = 0
+            for i in ids:
+                if i.startswith(prefix):
+                    try:
+                        best = max(best, int(i[len(prefix):]))
+                    except ValueError:
+                        pass
+            return best
+
+        self._claim_counter = _max_suffix("c", [c.id for c in self.claims])
+        self._target_counter = _max_suffix("t", [t.id for t in self.targets])
+        self._obligation_counter = _max_suffix("o", [o.id for o in self.obligations])
+        self._unit_counter = _max_suffix("u", [u.id for u in self.units])
+
+    def _validate_snapshot_graph(self) -> None:
+        """Strict-mode validation: check referential integrity."""
+        claim_ids = set(self._claim_index.keys())
+        target_ids = set(self._target_index.keys())
+        source_ids = set(self._source_index.keys())
+        obligation_ids = set(self._obligation_index.keys())
+
+        errors: list[str] = []
+        for c in self.claims:
+            for tid in c.target_refs:
+                if tid not in target_ids:
+                    errors.append(f"claim {c.id} refs missing target {tid}")
+            for sid in c.support_refs:
+                if sid not in claim_ids:
+                    errors.append(f"claim {c.id} support_ref to missing claim {sid}")
+            for cid in c.contradicts_refs:
+                if cid not in claim_ids:
+                    errors.append(f"claim {c.id} contradicts_ref to missing claim {cid}")
+        for t in self.targets:
+            for cid in t.claim_refs:
+                if cid not in claim_ids:
+                    errors.append(f"target {t.id} refs missing claim {cid}")
+            for cid in t.closure_basis:
+                if cid not in claim_ids:
+                    errors.append(f"target {t.id} closure_basis refs missing claim {cid}")
+        for u in self.units:
+            if u.obligation_ref and u.obligation_ref not in obligation_ids:
+                errors.append(f"unit {u.id} refs missing obligation {u.obligation_ref}")
+            for cid in u.claim_refs:
+                if cid not in claim_ids:
+                    errors.append(f"unit {u.id} refs missing claim {cid}")
+
+        if errors:
+            raise ValueError(
+                f"snapshot graph validation failed ({len(errors)} errors):\n"
+                + "\n".join(errors[:20])
+            )
