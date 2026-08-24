@@ -21,6 +21,7 @@ from .synthesis import plan_synthesis, synthesize, write_final_state
 from .triage import triage_sources
 
 MAX_ITERATIONS = int(os.getenv("LOOP_MAX_ITERATIONS", "12"))
+CANONICAL_RESOLUTION = os.getenv("LOOP_CANONICAL_RESOLUTION", "0").strip() in ("1", "true", "yes")
 # Contract plane (obligations/units/coverage plan/gate). Default OFF: v5/v6
 # showed macro regressions; re-enable per-experiment until validated on its
 # target class with paired runs.
@@ -336,7 +337,14 @@ def run_loop(task, worker_caller, smart_caller=None, synthesis_caller=None,
     if ANALYSIS_ENRICHMENT:
         _analysis_enrichment(board, worker_caller, smart)
 
-    plan = plan_synthesis(smart, board)
-    deliverable = synthesize(synth, board, plan, repair_caller=smart)
+    resolutions = None
+    if CANONICAL_RESOLUTION:
+        from .resolution import resolve_all
+        resolutions = resolve_all(smart, board)
+        board.snapshot("resolved")
+
+    plan = plan_synthesis(smart, board, resolutions=resolutions)
+    deliverable = synthesize(synth, board, plan, repair_caller=smart,
+                             resolutions=resolutions)
     write_final_state(board)
     return deliverable, board

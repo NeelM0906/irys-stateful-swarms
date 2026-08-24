@@ -20,9 +20,12 @@ def call_json(caller, board: Board, prompt: str, *, kind: str,
     )
     board.add_tokens(result.tokens_input, result.tokens_output, result.model)
     parsed = parse_json(result.text)
+    finish = getattr(result, "finish_reason", "stop") or "stop"
+    p_attempts = getattr(result, "provider_attempts", 1) or 1
     board.log(
         kind, f"{kind} call ({result.model}, {result.tokens_total} tok)",
-        detail={"parsed": parsed is not None},
+        detail={"parsed": parsed is not None, "finish_reason": finish,
+                "provider_attempts": p_attempts},
         model=result.model, tokens=result.tokens_total,
         tokens_in=result.tokens_input, tokens_out=result.tokens_output,
     )

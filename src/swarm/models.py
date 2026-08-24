@@ -43,6 +43,8 @@ class ModelResult:
     tokens_total: int
     model: str
     latency_ms: int
+    finish_reason: str = "stop"
+    provider_attempts: int = 1
 
 
 class ModelCaller(Protocol):

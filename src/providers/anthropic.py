@@ -82,6 +82,8 @@ class AnthropicCaller:
             tokens_in = response.usage.input_tokens
             tokens_out = response.usage.output_tokens
 
+            finish = getattr(response, "stop_reason", "end_turn") or "end_turn"
+
             return ModelResult(
                 text=text or "",
                 tokens_input=tokens_in,
@@ -89,6 +91,8 @@ class AnthropicCaller:
                 tokens_total=tokens_in + tokens_out,
                 model=self.model,
                 latency_ms=latency_ms,
+                finish_reason=finish,
+                provider_attempts=attempt + 1,
             )
 
         raise RuntimeError(f"Anthropic call failed after 5 retries: {last_err}")

@@ -85,6 +85,8 @@ class OpenAICaller:
                 tokens_total=tokens_in + tokens_out,
                 model=self.model,
                 latency_ms=latency_ms,
+                finish_reason=choice.finish_reason if choice else "stop",
+                provider_attempts=attempt + 1,
             )
 
         raise RuntimeError(f"OpenAI call failed after 5 retries: {last_err}")

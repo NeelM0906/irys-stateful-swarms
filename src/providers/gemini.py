@@ -120,6 +120,13 @@ class GeminiCaller:
             tokens_in = getattr(usage, "prompt_token_count", 0) or 0
             tokens_out = getattr(usage, "candidates_token_count", 0) or 0
 
+            finish = "stop"
+            candidates = getattr(response, "candidates", None)
+            if candidates:
+                fr = getattr(candidates[0], "finish_reason", None)
+                if fr is not None:
+                    finish = str(fr).rsplit(".", 1)[-1].lower()
+
             return ModelResult(
                 text=text or "",
                 tokens_input=tokens_in,
@@ -127,6 +134,8 @@ class GeminiCaller:
                 tokens_total=tokens_in + tokens_out,
                 model=self.model,
                 latency_ms=latency_ms,
+                finish_reason=finish,
+                provider_attempts=attempt + 1,
             )
 
         raise RuntimeError(f"Gemini call failed after 5 retries: {last_err}")

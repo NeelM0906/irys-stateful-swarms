@@ -152,16 +152,21 @@ def requirement_block(board: Board) -> str:
     )
 
 
-def plan_synthesis(smart_caller, board: Board) -> dict:
+def plan_synthesis(smart_caller, board: Board, resolutions=None) -> dict:
     """Allocate targets to deliverables — form is decided late, by judgment."""
     deliverables = board.metadata.get("deliverables", {})
     files = list(deliverables.values()) if deliverables else ["output.docx"]
 
-    target_lines = "\n".join(
-        f"{t.id} [{t.status}/{t.materiality}] {t.need}"
-        f" ({len(t.claim_refs)} claims)"
-        for t in board.targets
-    )
+    def _target_line(t):
+        base = (f"{t.id} [{t.status}/{t.materiality}] {t.need}"
+                f" ({len(t.claim_refs)} claims)")
+        if resolutions:
+            r = resolutions.get(t.id)
+            if r:
+                base += f" [resolution:{r.status}]"
+        return base
+
+    target_lines = "\n".join(_target_line(t) for t in board.targets)
     ob_lines = "\n".join(
         f"{o.id} [{o.status}/{o.coverage}/{'mandatory' if o.mandatory else 'optional'}]"
         f" {o.text} | {len([u for u in board.units_for(o.id) if u.status != 'waived'])} units"
@@ -691,7 +696,7 @@ def _assemble_sections(filename: str, section_outputs: list[tuple[str, list[str]
 
 
 def synthesize(smart_caller, board: Board, plan: dict,
-               repair_caller=None) -> dict[str, str]:
+               repair_caller=None, resolutions=None) -> dict[str, str]:
     """Generate each deliverable section-locally: atomic section-scoped packet
     chunks, section-scoped drafting/repair, deterministic assembly.
 
