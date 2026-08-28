@@ -1,6 +1,28 @@
 # irys-stateful-swarms
 
-**The highest all-pass rate on the Legal Agent Benchmark at $4.64/task.** On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **32.5% strict all-pass** and **91.44% criteria macro** at **$4.64/task**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines — with no fine-tuning, no custom training data, and no domain-specific scaffolding. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
+**The highest all-pass rate on the Legal Agent Benchmark at $4.64/task** — under single-judge scoring; see the correction below. On all 2,010 tasks in the [Harvey Legal Agent Benchmark (LAB) v1.0](https://github.com/harveyai/harvey-labs) — 27 legal practice areas — irys-stateful-swarms achieves **32.5% strict all-pass** and **91.44% criteria macro** at **$4.64/task**, exceeding every published result including Harvey's own post-trained [Tenet model](https://www.harvey.ai/blog/post-training-update-harvey-tenet) (19.7%) and all frontier model baselines — with no fine-tuning, no custom training data, and no domain-specific scaffolding. See [benchmark comparison](#benchmark-comparison), [verification](#verification), and [benchmark context](#context).
+
+> **Scoring-profile correction.** The all-pass figure — and every comparison derived from it on
+> this page — is produced by a **single** `gemini-3.5-flash-lite` judge. LAB's standard profile
+> uses **two** judges (`claude-sonnet-4-6` + `gpt-5.5`), and the published results this page is
+> compared against are dual-judge figures, so the comparison table is not measured on a common
+> basis.
+>
+> The only benchmark outputs published so far are
+> [release v2.0](https://github.com/dl1683/irys-stateful-swarms/releases) — the earlier
+> `636 / 2,010 = 31.6%` run. Re-scoring **those** outputs under the two-judge profile gives
+> **14.42%** (95% CI 11.13–17.70%), a factor of 2.19. On that run, 14.42% is below Harvey Tenet
+> (19.7%) and Muse Spark 1.1 (20.0%), so the claims of "highest all-pass rate" and "exceeding
+> every published result" did not hold once LAB's own scoring profile was applied.
+>
+> The current `654 / 2,010 = 32.5%` figure comes from a later run whose outputs have **not** been
+> released, so the size of the same correction on that run cannot be measured by anyone outside
+> the project, and the "score these outputs yourself" invitation below does not yet cover the
+> headline number. Publishing that run's outputs, or re-scoring it with the two-judge profile,
+> would resolve this.
+>
+> Method, per-task data and the aggregation script:
+> [BENCHMARK_VERIFICATION.md](BENCHMARK_VERIFICATION.md) and [`verification/`](verification/).
 
 ### At a glance
 
@@ -9,6 +31,11 @@
 ![Performance vs Cost — Harvey LAB](assets/lab_performance_vs_cost.png)
 
 **62x** more intelligence per dollar than Fable 5. **50x** more than Opus 4.7. **65%** higher all-pass than Harvey Tenet — with zero training.
+
+> These multipliers are derived from the single-judge all-pass figure and compare against
+> dual-judge published results. On the one run whose outputs are published, the two-judge score
+> was 14.42% — below Harvey Tenet — which reverses the last comparison. See
+> [BENCHMARK_VERIFICATION.md](BENCHMARK_VERIFICATION.md).
 
 ![What $100 Buys You on LAB](assets/lab_what_100_buys.png)
 
@@ -57,7 +84,9 @@ irys-stateful-swarms completed the full public [Harvey Legal Agent Benchmark (LA
 | Tasks completed | `2,010 / 2,010` |
 | Criteria macro | `91.44%` |
 | Criteria micro | `105,146 / 114,437 = 91.88%` |
-| Strict all-pass | `654 / 2,010 = 32.5%` |
+| Strict all-pass (single judge) | `654 / 2,010 = 32.5%` |
+| Scoring judge | `gemini-3.5-flash-lite` (single judge; LAB's standard profile is two judges) |
+| Two-judge profile, v2.0 outputs | `14.42%` (95% CI 11.13–17.70%) — see [BENCHMARK_VERIFICATION.md](BENCHMARK_VERIFICATION.md) |
 | Tasks at 95%+ | `1,260 / 2,010 = 62.7%` |
 | Total cost | `$9,317` |
 | Cost per task | `$4.64` |
@@ -80,6 +109,11 @@ Harvey published official LAB results for Tenet and frontier model baselines in 
 | Opus 5 | 6.7% | ~$51 |
 | Gemini 3.6 Flash | 3.3% | ~$2 |
 | GPT-5.6 Sol | 2.5% | ~$12 |
+
+> **Scoring profiles differ across this table.** The irys row is scored by a single
+> `gemini-3.5-flash-lite` judge; the comparison rows are Harvey's dual-judge figures. Re-scoring
+> the released v2.0 outputs (the 31.6% run) under the two-judge profile gave 14.42%, below both
+> Muse Spark 1.1 and Harvey Tenet. As printed, the rows are not measured the same way.
 
 > **A note on cost and benchmark versions:** The Opus 4.7 cost (~$51/task) was measured on the **original** LAB release (1,251 tasks, 24 families). LAB v1.0 substantially expanded the benchmark to 2,010 tasks and 27 families, adding the firm-knowledge family (250 enterprise-search tasks over a shared 9,288-document DMS), an expanded contracts family, and diligence — all of which involve significantly longer documents and deeper cross-document reasoning than the original task set. Frontier model costs on the v1.0 benchmark would likely be **materially higher** than the original figures, because the new tasks require more tokens to process. irys cost ($4.64/task) is measured on the harder v1.0 benchmark — making the cost advantage over frontier models even larger than the raw numbers suggest.
 >
@@ -109,14 +143,18 @@ Harvey's [initial LAB publication](https://www.harvey.ai/blog/legal-agent-benchm
 | Cost per all-pass point | **$0.14** | $0.41 | $8.87 | $7.18 |
 | Training investment | **Zero** | 150 B300 GPUs, 2 months | — | — |
 
-irys-stateful-swarms delivers **62x** the intelligence per dollar of Fable 5, **50x** Opus 4.7, and **2.8x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding.
+> The irys all-pass, all-pass/dollar and cost/point rows use the single-judge figure and are not
+> on the same scoring basis as the other columns.
+
+irys-stateful-swarms delivers **62x** the intelligence per dollar of Fable 5, **50x** Opus 4.7, and **2.8x** Harvey Tenet — with no fine-tuning, no custom training data, and no domain-specific scaffolding. (Single-judge basis; the Harvey Tenet multiple is not on a common scoring basis.)
 
 <details>
 <summary>What $100 buys on LAB (data)</summary>
 
 | System | Tasks per $100 | All-pass rate | Expected all-pass tasks per $100 |
 |---|---:|---:|---:|
-| **irys-stateful-swarms** | **21.6** | **32.5%** | **7.0** |
+| **irys-stateful-swarms** (single judge) | **21.6** | **32.5%** | **7.0** |
+| **irys-stateful-swarms** (two-judge, v2.0 outputs) | 19.6 | 14.42% | 2.8 |
 | Harvey Tenet | 12.5 | 19.7% | 2.5 |
 | Opus 4.7 | 2.0 | 7.1% | 0.14 |
 | Fable 5 | 1.0 | 11.5% | 0.11 |
@@ -131,16 +169,22 @@ irys-stateful-swarms delivers **62x** the intelligence per dollar of Fable 5, **
 | Raw model | Kimi K3 | None | 10.8% | — |
 | Post-training | Kimi K3 | LoRA + GSPO, 150 B300 GPUs, 2 months | 19.7% | +82% |
 | Coordination architecture | General-purpose models | Stateful swarms, zero training | **32.5%** | **+201%** |
+| Coordination architecture (two-judge, v2.0 outputs) | General-purpose models | Stateful swarms, zero training | 14.42% | +34% |
 
-Harvey invested in domain-specific post-training: RL over ~1,750 legal environments on 150 GPUs for 2 months. That lifted Kimi K3 from 10.8% to 19.7% (+82%). irys achieves +201% over the same baseline with zero training compute.
+Harvey invested in domain-specific post-training: RL over ~1,750 legal environments on 150 GPUs for 2 months. That lifted Kimi K3 from 10.8% to 19.7% (+82%). irys achieves +201% over the same baseline with zero training compute — on single-judge scoring. On the released v2.0 outputs scored with the two-judge profile the uplift is +34%, below the +82% from post-training.
 
 </details>
 
-The most expensive frontier models deliver the worst results — Fable 5 at ~$102/task achieves only 11.5% all-pass, spending 22x what irys costs for 65% lower performance. Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
+The most expensive frontier models deliver the worst results — Fable 5 at ~$102/task achieves only 11.5% all-pass, spending 22x what irys costs for 65% lower performance (single-judge basis; on the released v2.0 outputs scored with two judges, Fable 5's 11.5% falls inside the measured 11.13–17.70% interval). Frontier intelligence alone does not solve long-horizon document analysis — coordination does.
 
 ### Verification
 
 The complete outputs from the full benchmark run are available as downloadable archives in [GitHub Releases](https://github.com/dl1683/irys-stateful-swarms/releases). You can score these outputs yourself using the [Harvey LAB scorer](https://github.com/harveyai/harvey-labs) to independently verify these numbers.
+
+The archives currently published are the v2.0 / 31.6% run; the outputs for the 32.5% run above have
+not been released yet. An independent re-scoring of the published outputs under LAB's standard
+two-judge profile is documented in [BENCHMARK_VERIFICATION.md](BENCHMARK_VERIFICATION.md), with data
+and code in [`verification/`](verification/).
 
 
 ### Context
